@@ -1,6 +1,4 @@
-import torch
-import decomp
-
+# Package-internal imports
 from constants import *
 from modules.likelihood import (
 	ArgumentNodeAnnotationLikelihood,
@@ -9,7 +7,11 @@ from modules.likelihood import (
 	DocumentEdgeAnnotationLikelihood
 	)
 from modules.freezable_module import FreezableModule
+from utils import load_annotator_ids
 
+# Package-external imports
+import torch
+import decomp
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict, ModuleDict
 from torch.nn.functional import softmax
@@ -79,16 +81,16 @@ class EventTypeInductionModel(FreezableModule):
 		self.participant_mus = clz._initialize_mus(ARGUMENT_ANNOTATION_ATTRIBUTES, self.n_event_types + self.n_entity_types)
 		self.relation_mus = clz._initialize_mus(DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES, self.n_relation_types)
 
-		# Random effects: nested ModuleDict with annotator at first level,
-		# property at the second level
-		self.pred_random_effects, self.arg_random_effects,\
-			self.sem_edge_random_effects, self.doc_edge_random_effects = clz._initialize_random_effects(uds)
+		# Fetch annotator IDs from UDS, used by the likelihood
+		# modules to initialize their random effects
+		pred_node_annotators, arg_node_annotators,\
+		   sem_edge_annotators, doc_edge_annotators = load_annotator_ids(uds)
 
 		# Modules for calculating likelihoods
-		self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(self.pred_random_effects)
-		self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(self.arg_random_effects)
-		self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(self.sem_edge_random_effects)
-		self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(self.doc_edge_random_effects)
+		self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(pred_node_annotators)
+		self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(arg_node_annotators)
+		self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(sem_edge_annotators)
+		self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(doc_edge_annotators)
 
 	@classmethod
 	def _initialize_mus(cls, attribute_dict, n_types) -> ParameterDict:
@@ -110,52 +112,6 @@ class EventTypeInductionModel(FreezableModule):
 		The result is returned as log probabilities
 		"""
 		return Parameter(torch.log(softmax(torch.randn(shape), -1)))
-
-	@staticmethod
-	def _initialize_random_effects(uds: decomp.UDSCorpus) -> ModuleDict:
-		"""Initialize annotator random intercepts"""
-		def random_effects_helper(items, prop_attrs, random_effects):
-			# Iterate over annotation keys, not prop_attrs keys
-			prop_domains = prop_attrs.keys()
-			for item, annotation in items:
-				for domain, props in annotation.items():
-					if domain in prop_domains:
-						for p in annotation[domain].keys():
-							prop_dim = prop_attrs[domain][p]['dim']
-							# PyTorch forbids ModuleDict keys to contain '.'
-							prop_name = '-'.join([domain, p]).replace('.', '-')
-							annotator_ids = props[p]['value'].keys()
-							for annotator in annotator_ids:
-								random_effects[annotator][prop_name] =\
-									Parameter(torch.randn(prop_dim))
-
-		# Random effects dictionaries by domain for all annotators.
-		# We break them out this way so that they may be passed to the
-		# appropriate Likelihood subclass constructor.
-		pred_random_effects = defaultdict(ParameterDict)
-		arg_random_effects = defaultdict(ParameterDict)
-		sem_edge_random_effects = defaultdict(ParameterDict)
-		doc_edge_random_effects = defaultdict(ParameterDict)
-
-		# Random effects for sentence-level annotations
-		for graph in uds:
-			pred_items = uds[graph].predicate_nodes.items()
-			arg_items = uds[graph].argument_nodes.items()
-			sem_edge_items = uds[graph].semantics_edges().items()
-
-			# Initialize random effects for each annotator and each property
-			random_effects_helper(pred_items, PREDICATE_ANNOTATION_ATTRIBUTES, pred_random_effects)
-			random_effects_helper(arg_items, ARGUMENT_ANNOTATION_ATTRIBUTES, arg_random_effects)
-			random_effects_helper(sem_edge_items, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES, sem_edge_random_effects)
-
-		# Random effects for document-level annotations
-		for doc in uds.documents.values():
-			doc_edge_items = doc.document_graph.edges.items()
-			random_effects_helper(doc_edge_items, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES, doc_edge_random_effects)
-
-		# Separate ModuleDicts for each annotation domain
-		return (ModuleDict(pred_random_effects), ModuleDict(arg_random_effects),
-				ModuleDict(sem_edge_random_effects), ModuleDict(doc_edge_random_effects))
 
 	def forward(self, document: decomp.semantics.uds.UDSDocument) -> torch.FloatTensor:
 		
@@ -245,7 +201,6 @@ class EventTypeInductionModel(FreezableModule):
 							sem_edge_likelihood.unsqueeze(2).repeat(1,1,self.n_event_types)
 						arg_node_likelihood_entity = self.entity_participant_probs +\
 							sem_edge_likelihood.unsqueeze(2).repeat(1,1,self.n_entity_types)
-
 
 					"""
 					Each element of arg_node_likelihood_entity now contains the joint log

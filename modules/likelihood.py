@@ -4,18 +4,30 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from constants import *
 from overrides import overrides
-from torch import Tensor
+from torch import Tensor, randn
 from torch.distributions import Bernoulli, Categorical
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict
-from typing import Any, Dict
+from typing import Any, Dict, Set
 
 class Likelihood(Module, metaclass=ABCMeta):
 	"""ABC for Event Type Induction Module likelihood computations"""
-	def __init__(self, random_effects: ModuleDict, prop_attrs: Dict[str, Dict[str, int]]):
+	def __init__(self, annotator_ids: Set[str], prop_attrs: Dict[str, Dict[str, int]]):
 		super().__init__()
-		self.random_effects = random_effects
+		self.annotator_ids = annotator_ids
 		self.prop_attrs = prop_attrs
 		self.prop_domains = prop_attrs.keys()
+		self.random_effects = self._initialize_random_effects(annotator_ids)
+
+	def _initialize_random_effects(self, annotator_ids: Set[str]) -> ModuleDict:
+		random_effects = defaultdict(ParameterDict)
+		for annotator in annotator_ids:
+			for domain in self.prop_domains:
+				for p in self.prop_attrs[domain].keys():
+					prop_name = '-'.join([domain, p]).replace('.', '-')
+					prop_dim = self.prop_attrs[domain][p]['dim']
+					random_effects[annotator][prop_name] = Parameter(torch.randn(prop_dim)) 
+
+		return ModuleDict(random_effects)
 
 	def _get_distribution(self, mu, random, prop_type):
 		if prop_type == BINARY:
@@ -69,8 +81,8 @@ class Likelihood(Module, metaclass=ABCMeta):
 class PredicateNodeAnnotationLikelihood(Likelihood):
 
 	@overrides
-	def __init__(self, random_effects: ModuleDict):
-		super().__init__(random_effects, PREDICATE_ANNOTATION_ATTRIBUTES)
+	def __init__(self, annotator_ids: Set[str]):
+		super().__init__(annotator_ids, PREDICATE_ANNOTATION_ATTRIBUTES)
 
 	@overrides
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
@@ -80,8 +92,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
 class ArgumentNodeAnnotationLikelihood(Likelihood):
 
 	@overrides
-	def __init__(self, random_effects: ModuleDict):
-		super().__init__(random_effects, ARGUMENT_ANNOTATION_ATTRIBUTES)
+	def __init__(self, annotator_ids: Set[str]):
+		super().__init__(annotator_ids, ARGUMENT_ANNOTATION_ATTRIBUTES)
 
 	@overrides
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
@@ -91,8 +103,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
 	@overrides
-	def __init__(self, random_effects: ModuleDict):
-		super().__init__(random_effects, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
+	def __init__(self, annotator_ids: Set[str]):
+		super().__init__(annotator_ids, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
 
 	@overrides
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
@@ -101,8 +113,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 class DocumentEdgeAnnotationLikelihood(Likelihood):
 
 	@overrides
-	def __init__(self, random_effects: ModuleDict):
-		super().__init__(random_effects, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
+	def __init__(self, annotator_ids: Set[str]):
+		super().__init__(annotator_ids, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
 
 	@overrides
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
