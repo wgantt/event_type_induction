@@ -187,7 +187,9 @@ class EventTypeInductionModel(FreezableModule):
 					# Compute likelihood of the semantics edge annotations for each role type
 					sem_edge_likelihoods = self.semantics_edge_likelihood(self.role_mus, sem_edge_anno)
 
-					# Similar procedure for semantics edges as for predicates
+					# Similar procedure for semantics edges as for predicates, only
+					# here we add in the prior over role probabilities, relying on
+					# Tensor broadcasting (as we do below as well)
 					if sem_edge_likelihoods:
 						sem_edge_likelihood =\
 							self.role_probs + torch.sum(torch.stack(list(sem_edge_likelihoods.values())), dim=0)
@@ -204,7 +206,8 @@ class EventTypeInductionModel(FreezableModule):
 					arg_anno = self.uds[s].argument_nodes[arg]
 
 					# Compute likelihood of the argument node annotations for each event type.
-					# This gives us likelihoods for both event-type and entity-type arguments
+					# This gives us likelihoods for both event-type and entity-type arguments,
+					# which must be split out
 					arg_node_likelihoods = self.arg_node_likelihood(self.participant_mus, arg_anno)
 
 					# Fork on participant domain. A Bernoulli indicates which domain to choose
@@ -220,7 +223,7 @@ class EventTypeInductionModel(FreezableModule):
 						arg_node_likelihood_by_participant_type =\
 							torch.sum(torch.stack(list(arg_node_likelihoods.values())), dim=0)
 
-						# Separate
+						# Separate into event and entity tensors
 						arg_node_likelihood_event =\
 							arg_node_likelihood_by_participant_type[:self.n_event_types]
 						arg_node_likelihood_entity =\
@@ -256,6 +259,7 @@ class EventTypeInductionModel(FreezableModule):
 													torch.flatten(arg_node_likelihood_entity)]),0)
 
 
+			# TODO: document edges
 			# for doc_edge, doc_edge_anno in document.document_graph.edges.items():
 				# doc_edge_likelihoods = self.doc_edge_likelihood(self.relation_mus, doc_edge_anno)
 

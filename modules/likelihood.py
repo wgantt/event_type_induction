@@ -33,8 +33,7 @@ class Likelihood(Module, metaclass=ABCMeta):
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
 		likelihoods = {}
 		for domain, props in annotation.items():
-			# Time is a special; skipping it now for debugging purposes
-			# General TODO: ensure this works with nominal properties
+			# DEBUG
 			if 'time' in domain:
 				continue
 			if domain in self.prop_domains:
