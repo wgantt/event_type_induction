@@ -1,6 +1,7 @@
+from collections import defaultdict
 from constants import *
 from decomp import UDSCorpus
-from typing import Set, Tuple
+from typing import Dict, Set, Tuple
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
 	"""Fetch all of the annotator IDs from an annotated UDS corpus
@@ -43,3 +44,22 @@ def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
 
 	return pred_node_annotators, arg_node_annotators,\
 		   sem_edge_annotators, doc_edge_annotators
+
+def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
+	"""Get sets of UDS document IDs based on their split
+
+	This is really a utility UDS should provide on its own.
+
+	Parameters
+	----------
+	uds
+		The UDSCorpus object from which document IDs are
+		to be extracted
+	"""
+	splits = defaultdict(set)
+	for doc_id, doc in uds.documents.items():
+		sample_sentence = list(doc.sentence_ids)[0]
+		split = sample_sentence.split('-')[1]
+		splits[split].add(doc_id)
+	return splits
+

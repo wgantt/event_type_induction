@@ -33,21 +33,12 @@ class Likelihood(Module, metaclass=ABCMeta):
 		if prop_type == BINARY:
 			return Bernoulli(torch.sigmoid(mu + random))
 		else:
-			return Categorical(torch.softmax(mu + random, 0))
-
-	def _scalar_to_vector(value, dim):
-		"""Returns a one-hot vector for representing nominal annotations"""
-		vec = torch.zeros(dim)
-		vec[value - 1] = 1
-		return vec
+			return Categorical(torch.softmax(mu + random, -1))
 
 	@abstractmethod
 	def forward(self, mus: ParameterDict, annotation: Dict[str, Any]) -> Dict[str, Tensor]:
 		likelihoods = {}
 		for domain, props in annotation.items():
-			# DEBUG
-			if 'time' in domain:
-				continue
 			if domain in self.prop_domains:
 				for p in props:
 

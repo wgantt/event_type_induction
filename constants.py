@@ -12,7 +12,7 @@ ORDINAL = 0
 NOMINAL = 1
 BINARY = 2
 
-PREDICATE_ANNOTATION_ATTRIBUTES = {'time': {'duration': {'type': NOMINAL, 'dim': 10}},
+PREDICATE_ANNOTATION_ATTRIBUTES = {'time': {'duration': {'type': NOMINAL, 'dim': 11}},
 								   'genericity': {'pred-dynamic': {'type': BINARY, 'dim': 1},
 								   				  'pred-hypothetical': {'type': BINARY, 'dim': 1},
 								   				  'pred-particular': {'type': BINARY, 'dim': 1}},
