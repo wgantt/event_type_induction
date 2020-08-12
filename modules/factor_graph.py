@@ -1,29 +1,24 @@
 import networkx as nx
 
 from abc import ABC, abstractmethod, abstractproperty
+from constants import *
 from decomp.semantics.uds import UDSSentenceGraph, UDSDocumentGraph
 from enum import Enum
 from torch import Tensor
+from typing import List, Optional, Tuple
 
 """
 Classes for representing a factor graph, borrowed with modest modification
 from danbar's factor graph library fglib (https://github.com/danbar/fglib)
 
 TODOs:
-	- Add methods for handling max-product and sum-product
-	- Add method for factor graph construction from UDS graph
-	- Determine whether it's necessary to add distinct 'Edge' class
+	- Add methods for handling max-product and sum-product, both
+	  at individual node/edge level and at graph level
 """
 class NodeType(Enum):
     """Enumeration for node types."""
     VARIABLE = 0
     FACTOR = 1
-
-
-class RVType(Enum):
-	"""Enumeration for random variable types"""
-	BERNOULLI = 0
-	CATEGORICAL = 1
 
 
 class Node(ABC):
@@ -72,10 +67,9 @@ class Node(ABC):
 
 class VariableNode(Node):
 
-    def __init__(self, label, rv_type):
+    def __init__(self, label):
         """Create a variable node."""
         super().__init__(label)
-        self.init = rv_type.unity(self)
 
     @property
     def type(self):
@@ -94,11 +88,11 @@ class VariableNode(Node):
 
 class FactorNode(Node):
 
-    def __init__(self, label, factor=None):
+    def __init__(self, label, factor: Optional[Tensor]):
         """Create a factor node."""
         super().__init__(label)
         self.factor = factor
-        self.record = {}
+        self.record = {} # Not sure whether this is actually necessary
 
     @property
     def type(self):
@@ -114,6 +108,43 @@ class FactorNode(Node):
 
     # TODO: add methods for sum-product, max-product
 
+class Edge:
+
+    """Base class for all edges
+    Each edge class contains a message attribute, which stores
+    the corresponding message in the forward and backward directions
+    """
+
+    def __init__(self, snode: Node, tnode: Node, init=None):
+        """Create an edge."""
+        # Array Index
+        self.index = {snode: 0, tnode: 1}
+
+        # Two-dimensional message list
+        self.message = [[None, init],
+                        [init, None]]
+
+        self.logarithmic = False
+
+        # Variable node
+        if snode.type == NodeType.VARIABLE:
+            self.variable = snode
+        else:
+            self.variable = tnode
+
+    def __str__(self):
+        """Return string representation."""
+        return str(self.message)
+
+    def set_message(self, snode, tnode, value, logarithmic=False):
+        """Set value of message from source node to target node."""
+        self.message[self.index[snode]][self.index[tnode]] = value
+        self.logarithmic = logarithmic
+
+    def get_message(self, snode, tnode):
+        """Return value of message from source node to target node."""
+        return self.message[self.index[snode]][self.index[tnode]]
+
 class FactorGraph(nx.Graph):
     """Class for factor graphs"""
 
@@ -121,9 +152,8 @@ class FactorGraph(nx.Graph):
         """Initialize a factor graph."""
         super().__init__(self, name="Factor Graph")
 
-    # TODO: add from_uds method
 
-    def set_node(self, node):
+    def set_node(self, node: Node) -> None:
         """Add a single node to the factor graph.
         A single node is added to the factor graph.
         Optional attributes can be added to the single node by using keyword
@@ -134,7 +164,7 @@ class FactorGraph(nx.Graph):
         node.graph = self
         self.add_node(node, type=node.type)
 
-    def set_nodes(self, nodes):
+    def set_nodes(self, nodes: List[Node]) -> None:
         """Add multiple nodes to the factor graph.
         Multiple nodes are added to the factor graph.
         Args:
@@ -143,7 +173,7 @@ class FactorGraph(nx.Graph):
         for n in nodes:
             self.set_node(n)
 
-    def set_edge(self, snode, tnode, init=None):
+    def set_edge(self, snode: Node, tnode: Node, init=None): -> None
         """Add a single edge to the factor graph.
         A single edge is added to the factor graph.
         It can be initialized with a given random variable.
@@ -152,14 +182,15 @@ class FactorGraph(nx.Graph):
             tnode: Target node for edge
             init: Initial message for edge
         """
-        self.add_edge(snode, tnode)
+        self.add_edge(snode, tnode, object=edges.Edge(snode, tnode, init))
 
-    def set_edges(self, edges):
+    def set_edges(self, edges: List[Tuple[Node, Node]]) -> None:
         """Add multiple edges to the factor graph.
         Multiple edges are added to the factor graph.
         Args:
             edges: A list of multiple edges
         """
+        # This doesn't add messages to the edges...
         for (snode, tnode) in edges:
             self.set_edge(snode, tnode)
 
