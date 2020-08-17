@@ -188,15 +188,15 @@ class EventTypeInductionModel(FreezableModule):
 
 				# Connect the argument and predicate variable and factor nodes
 				# Likelihood factors are always unary
-				fg.set_edge(pred_lf_node, pred_v_node)
-				fg.set_edge(arg_lf_node, arg_v_node)
+				fg.set_edge(pred_lf_node, pred_v_node, 0)
+				fg.set_edge(arg_lf_node, arg_v_node, 0)
 
 				# The prior factor for the predicate (over event types)
 				# is unary, but the one for the predicate (over role types)
 				# additionally depends on the (event type of the) predicate
-				fg.set_edge(pred_pf_node, pred_v_node)
-				fg.set_edge(arg_pf_node, arg_v_node)
-				fg.set_edge(arg_pf_node, pred_v_node)
+				fg.set_edge(pred_pf_node, pred_v_node, 0)
+				fg.set_edge(arg_pf_node, pred_v_node, 0)
+				fg.set_edge(arg_pf_node, arg_v_node, 1)
 
 				# Add a variable node for the semantics edge itself
 				sem_edge_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2))
@@ -227,9 +227,9 @@ class EventTypeInductionModel(FreezableModule):
 				# The above factor depends on the event type of the associated
 				# predicate and the role type of the associated argument (in
 				# addition to the participant domain itself)
-				fg.set_edge(participant_domain_pf_node, participant_domain_v_node)
-				fg.set_edge(participant_domain_pf_node, pred_v_node)
-				fg.set_edge(participant_domain_pf_node, arg_v_node)
+				fg.set_edge(participant_domain_pf_node, pred_v_node, 0)
+				fg.set_edge(participant_domain_pf_node, arg_v_node, 1)
+				fg.set_edge(participant_domain_pf_node, participant_domain_v_node, 2)
 
 				"""
 				Add a prior factor node for the participant type itself
@@ -248,10 +248,10 @@ class EventTypeInductionModel(FreezableModule):
 				# This factor depends on the event type of the predicate,
 				# the role type of the argument, and the participant domain,
 				# in addition to the participant type
-				fg.set_edge(participant_type_pf_node, sem_edge_v_node)
-				fg.set_edge(participant_type_pf_node, pred_v_node)
-				fg.set_edge(participant_type_pf_node, arg_v_node)
-				fg.set_edge(participant_type_pf_node, participant_domain_v_node)
+				fg.set_edge(participant_type_pf_node, pred_v_node, 0)
+				fg.set_edge(participant_type_pf_node, arg_v_node, 1)
+				fg.set_edge(participant_type_pf_node, sem_edge_v_node, 2)
+				fg.set_edge(participant_type_pf_node, participant_domain_v_node, 3)
 
 		# Generate document-level graph structure second (as it depends on the
 		# sentence-level structure)
@@ -305,9 +305,9 @@ class EventTypeInductionModel(FreezableModule):
 
 			# Now connect the variable node for the document edge
 			# to the ones for the argument and predicate nodes
-			fg.set_edge(doc_edge_v_node, doc_edge_pf_node)
-			fg.set_edge(v1_var_node, doc_edge_pf_node)
-			fg.set_edge(v2_var_node, doc_edge_pf_node)
+			fg.set_edge(v1_var_node, doc_edge_pf_node, 0)
+			fg.set_edge(v2_var_node, doc_edge_pf_node, 1)
+			fg.set_edge(doc_edge_v_node, doc_edge_pf_node, 2)
 
 		return fg
 
