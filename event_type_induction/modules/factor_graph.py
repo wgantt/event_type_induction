@@ -3,7 +3,7 @@ import networkx as nx
 from abc import ABC, abstractmethod, abstractproperty
 from decomp.semantics.uds import UDSSentenceGraph, UDSDocumentGraph
 from enum import Enum
-from modules.likelihood import Likelihood
+from event_type_induction.modules.likelihood import Likelihood
 from overrides import overrides
 from torch import Tensor, logsumexp
 from torch.nn import ParameterDict
@@ -137,8 +137,7 @@ class VariableNode(Node):
 		for n in neighbors:
 			belief += self.graph[n][self]['object'].get_message(n, self)
 
-		# TODO: add normalization? When is it necessary to normalize?
-		# If necessary, add boolean parameter
+		# TODO: add option for normalizing
 		return belief
 
 	@overrides
@@ -349,12 +348,6 @@ class Edge:
 		# for prior factors, not likelihood factors)
 		self.factor_dim = factor_dim
 
-		# Variable node
-		if source_node.type == NodeType.VARIABLE:
-			self.variable = source_node
-		else:
-			self.variable = target_node
-
 	def __str__(self):
 		"""Return string representation."""
 		return str(self.message)
@@ -385,16 +378,23 @@ class FactorGraph(nx.Graph):
 		and postfixed with the node type. By convetion, use 'v'
 		for variable nodes, 'lf' for likelihood factor nodes,
 		and 'pf' for prior factor nodes
+
+		Parameters
+		----------
+		ntype
+			The type of node
+		args
+			Other components of the name
 		"""
 		return '-'.join([*args, ntype])
 
 	def set_node(self, node: Node) -> None:
 		"""Add a single node to the factor graph.
-		A single node is added to the factor graph.
-		Optional attributes can be added to the single node by using keyword
-		arguments.
-		Args:
-			node: A single node
+
+		Parameters
+		----------
+		node
+			The node to be added
 		"""
 		node.graph = self
 		if node.type == NodeType.VARIABLE:

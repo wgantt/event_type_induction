@@ -2,7 +2,7 @@ import torch
 
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
-from constants import *
+from event_type_induction.constants import *
 from overrides import overrides
 from torch import Tensor, randn
 from torch.distributions import Bernoulli, Categorical
