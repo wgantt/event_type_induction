@@ -1,6 +1,10 @@
+import os
+
 from collections import defaultdict
-from constants import *
-from decomp import UDSCorpus
+from decomp import UDSCorpus, RawUDSDataset
+from event_type_induction.constants import *
+from glob import glob
+from pkg_resources import resource_filename
 from typing import Dict, Set, Tuple
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
@@ -63,3 +67,20 @@ def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
 		splits[split].add(doc_id)
 	return splits
 
+def load_event_structure_annotations(uds: UDSCorpus) -> None:
+	"""Loads the UDS-EventStructure annotations
+
+	These annotations are not included in v0.1.0 of UDS and
+	must therefore be loaded after the corpus has been initialized
+
+	Parameters
+	----------
+	uds
+		The UDSCorpus object into which the annotations will
+		be loaded
+	"""
+	data_dir = resource_filename('event_type_induction', 'data')
+	annotation_paths = glob(os.path.join(data_dir, '*.json'))
+	for path in annotation_paths:
+		annotation = RawUDSDataset.from_json(path)
+		uds.add_annotation(annotation)
