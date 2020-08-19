@@ -1,22 +1,33 @@
-from modules.induction import EventTypeInductionModel
+import unittest
+
 from decomp import UDSCorpus
+from event_type_induction.modules.induction import EventTypeInductionModel
+from utils import load_event_structure_annotations
 
-def main():
-	n_event_types = 2
-	n_role_types = 3
-	n_relation_types = 4
-	n_entity_types = 5
-	uds_train = UDSCorpus(split='train', annotation_format='raw')
-	model = EventTypeInductionModel(n_event_types, n_role_types, n_relation_types, n_entity_types, uds_train)
-	test_doc_id = uds_train['ewt-train-13'].document_id
-	test_doc = uds_train.documents[test_doc_id]
-	fg = model.construct_factor_graph(test_doc)
-	print("Variable nodes:")
-	print(fg.variable_nodes)
-	print("Factor nodes:")
-	print(fg.factor_nodes)
-	print("Edges")
-	print(fg.edges)
+class TestEventTypeInductionModel(unittest.TestCase):
 
-if __name__ == '__main__':
-	main()
+	@classmethod
+	def setup_class(cls):
+		n_event_types = 2
+		n_role_types = 3
+		n_relation_types = 4
+		n_entity_types = 5
+
+		# Load UDS with raw annotations
+		uds = UDSCorpus(split='train', annotation_format='raw')
+		load_event_structure_annotations(uds)
+
+		cls.uds = uds
+		cls.model = EventTypeInductionModel(n_event_types, n_role_types, n_relation_types, n_entity_types, cls.uds)
+
+	def test_factor_graph_construction(self):
+		uds = self.__class__.uds
+		model = self.__class__.model
+
+		# A test document
+		test_doc_id = uds['ewt-train-1'].document_id
+		test_doc = uds.documents[test_doc_id]
+		test_doc_sentences = test_doc.sentence_ids
+
+		# Construct the factor graph
+		fg = model.construct_factor_graph(test_doc)

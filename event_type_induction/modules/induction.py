@@ -1,19 +1,19 @@
 # Package-internal imports
-from modules.factor_graph import (
+from event_type_induction.modules.factor_graph import (
 	VariableNode,
 	LikelihoodFactorNode,
 	PriorFactorNode,
 	FactorGraph,
 	)
-from constants import *
-from modules.likelihood import (
+from event_type_induction.constants import *
+from event_type_induction.modules.likelihood import (
 	ArgumentNodeAnnotationLikelihood,
 	PredicateNodeAnnotationLikelihood,
 	SemanticsEdgeAnnotationLikelihood,
 	DocumentEdgeAnnotationLikelihood
 	)
-from modules.freezable_module import FreezableModule
-from utils import load_annotator_ids
+from event_type_induction.modules.freezable_module import FreezableModule
+from event_type_induction.utils import load_annotator_ids
 
 # Package-external imports
 import torch
@@ -27,6 +27,9 @@ from typing import Tuple
 
 class EventTypeInductionModel(FreezableModule):
 	"""Base module for event type induction
+
+	TODO
+		- Implement forward function
 	"""
 	def __init__(self, n_event_types: int, n_role_types: int,
 					   n_relation_types: int, n_entity_types: int,
@@ -79,7 +82,7 @@ class EventTypeInductionModel(FreezableModule):
 		"""
 		self.participant_domain_probs = clz._initialize_log_prob((self.n_event_types,
 															  self.n_role_types,
-															  1))
+															  self.n_participant_domain_types))
 		self.event_participant_probs = clz._initialize_log_prob((self.n_event_types,
 															self.n_role_types,
 															self.n_event_types))
@@ -134,7 +137,10 @@ class EventTypeInductionModel(FreezableModule):
 			The UDSDocumentGraph for which to construct the factor graph
 
 		TODO:
-			- Determine how messages should be initialized
+			- Verify that messages are initialized according to the uniform
+			  distribution
+			- Verify that variable nodes are added only for nodes or edges
+			  that are actually annotated
 			- Decide how best to handle participant domain
 		"""
 
@@ -152,7 +158,7 @@ class EventTypeInductionModel(FreezableModule):
 			sentence = self.uds[s]
 
 			# Process predicates and arguments via the semantics edges
-			# that relate them (Think: is this legitimate?)
+			# that relate them
 			for (v1, v2), sem_edge_anno in sentence.semantics_edges().items():
 				# Determine which variable is the predicate and which the argument
 				if 'pred' in v1:
@@ -161,8 +167,8 @@ class EventTypeInductionModel(FreezableModule):
 					pred, arg = v2, v1
 
 				# Add both as variable nodes
-				pred_v_node = VariableNode(FactorGraph.get_node_name('v', pred))
-				arg_v_node = VariableNode(FactorGraph.get_node_name('v', arg))
+				pred_v_node = VariableNode(FactorGraph.get_node_name('v', pred), self.n_event_types)
+				arg_v_node = VariableNode(FactorGraph.get_node_name('v', arg), self.n_role_types)
 				fg.set_node(pred_v_node)
 				fg.set_node(arg_v_node)
 
@@ -178,7 +184,11 @@ class EventTypeInductionModel(FreezableModule):
 				fg.set_node(pred_lf_node)
 				fg.set_node(arg_lf_node)
 
-				# Also add a prior factor for each
+				# Connect the likelihood factor nodes to their variable nodes
+				fg.set_edge(pred_lf_node, pred_v_node, 0)
+				fg.set_edge(arg_lf_node, arg_v_node, 0)
+
+				# Also create a prior factor for each
 				pred_pf_node = PriorFactorNode(FactorGraph.get_node_name('pf', pred),
 											   self.event_probs)
 				arg_pf_node = PriorFactorNode(FactorGraph.get_node_name('pf', arg),
@@ -186,20 +196,15 @@ class EventTypeInductionModel(FreezableModule):
 				fg.set_node(pred_pf_node)
 				fg.set_node(arg_pf_node)
 
-				# Connect the argument and predicate variable and factor nodes
-				# Likelihood factors are always unary
-				fg.set_edge(pred_lf_node, pred_v_node, 0)
-				fg.set_edge(arg_lf_node, arg_v_node, 0)
-
 				# The prior factor for the predicate (over event types)
 				# is unary, but the one for the predicate (over role types)
-				# additionally depends on the (event type of the) predicate
+				# additionally depends on the (event type of the) predicate.
 				fg.set_edge(pred_pf_node, pred_v_node, 0)
 				fg.set_edge(arg_pf_node, pred_v_node, 0)
 				fg.set_edge(arg_pf_node, arg_v_node, 1)
 
 				# Add a variable node for the semantics edge itself
-				sem_edge_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2))
+				sem_edge_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2), self.n_participant_types)
 				fg.set_node(sem_edge_v_node)
 
 				# Add a likelihood factor node for the semantics edge
@@ -215,7 +220,8 @@ class EventTypeInductionModel(FreezableModule):
 
 				# Add a variable node for the participant domain. Participants
 				# may be either events or entities.
-				participant_domain_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2, 'domain'))
+				participant_domain_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2, 'domain'),
+															self.n_participant_domain_types)
 				fg.set_node(participant_domain_v_node)
 
 				# Add a prior factor node for the Bernoulli prior over the
@@ -258,66 +264,49 @@ class EventTypeInductionModel(FreezableModule):
 		for (v1, v2), doc_edge_anno in document.document_graph.edges.items():
 			
 			# Create a variable node for the edge itself
-			doc_edge_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2))
+			doc_edge_v_node = VariableNode(FactorGraph.get_node_name('v', v1, v2),
+								self.n_relation_types)
 			fg.set_node(doc_edge_v_node)
 
 			# Create a likelihood factor node for its annotations
 			doc_edge_lf_node = LikelihoodFactorNode(FactorGraph.get_node_name('lf', v1, v2),
 								self.doc_edge_likelihood, self.relation_mus, doc_edge_anno)
 			fg.set_node(doc_edge_lf_node)
-
-			# Connect the variable and likelihood factor nodes
 			fg.set_edge(doc_edge_v_node, doc_edge_lf_node)
 
-			# Create a factor for the prior over the relation type.
-			# This prior depends not only on the event/entity types
-			# of the predicates/arguments it relates.
+			# Create a factor for the prior over the relation type
+			# and connect it with the document edge variable node
 			doc_edge_pf_node = PriorFactorNode(FactorGraph.get_node_name('lf', v1, v2),
 								self.relation_probs)
 			fg.set_node(doc_edge_pf_node)
+			fg.set_edge(doc_edge_v_node, doc_edge_pf_node)
 
 			"""
-			Connect this factor node to the document edge variable node,
-			but also to the variable nodes for the predicates/arguments
-			it relates. First, we have to identify the semantics nodes
-			corresponding to those document nodes and retrieve the
-			associated variable nodes.
+			We also need to connect this factor node to the variable nodes for
+			the predicate(s) it relates. First, we have to identify the semantics
+			nodes corresponding to the document node(s) and retrieve (or create)
+			the associated variable nodes.
 			"""
-			v1_sem_node_name = v1.replace('document', 'semantics')
-			v2_sem_node_name = v2.replace('document', 'semantics')
-			v1_factor_graph_node_name = FactorGraph.get_node_name('v', v1_sem_node_name)
-			v2_factor_graph_node_name = FactorGraph.get_node_name('v', v2_sem_node_name)
-			v1_var_node = fg.variable_nodes.get(v1_factor_graph_node_name)
-			v2_var_node = fg.variable_nodes.get(v2_factor_graph_node_name)
+			factor_dim = 0
+			for var_node_name in [v1, v2]:
+				# Fetch the variable node for the semantics node of the
+				# predicate or argument
+				sem_node_name = var_node_name.replace('document', 'semantics')
+				fg_node_name = FactorGraph.get_node_name('v', sem_node_name)
+				var_node = fg.variable_nodes.get(fg_node_name)
 
-			"""
-			It's possible that predicates or arguments connected by document
-			edges do not appear in a semantics edge, and thus will not have
-			been added to the factor graph in the sentence-level loop. If
-			that's the case, we add them here.
-			"""
-			if v1_var_node is None:
-				v1_var_node = VariableNode(v1_factor_graph_node_name)
-				fg.set_node(v1_var_node)
-			if v2_var_node is None:
-				v2_var_node = VariableNode(v2_factor_graph_node_name)
-				fg.set_node(v2_var_node)
+				# Verify that the variable node for the argument or predicate
+				# was in fact created in the sentence-level loop above
+				assert var_node is not None,\
+					f"Variable node {var_node} not found in factor graph"
 
-			# Now connect the variable node for the document edge
-			# to the ones for the argument and predicate nodes
-			fg.set_edge(v1_var_node, doc_edge_pf_node, 0)
-			fg.set_edge(v2_var_node, doc_edge_pf_node, 1)
-			fg.set_edge(doc_edge_v_node, doc_edge_pf_node, 2)
+				# Connect the variable node to the prior factor node for the
+				# document edge
+				fg.set_edge(var_node, doc_edge_pf_node, factor_dim)
+				factor_dim += 1
 
 		return fg
 
 	def forward(self, document: decomp.semantics.uds.UDSDocument) -> torch.FloatTensor:
 		# TODO
-
-		# Construct the factor graph for the document
-		fg = self.construct_factor_graph(document)
-
-		# Run (loopy) belief propagation
-		ll = torch.FloatTensor(fg.loopy_belief_propagation())
-
-		return ll
+		pass

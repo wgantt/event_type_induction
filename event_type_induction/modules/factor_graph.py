@@ -92,13 +92,25 @@ class Node(ABC):
 
 class VariableNode(Node):
 
-	def __init__(self, label: str, observed: bool = False):
-		"""Create a variable node."""
+	def __init__(self, label: str, ntypes: int, observed: bool = False):
+		"""Representation of a variable node in the factor graaph
+
+		Parameters
+		----------
+		label
+			The name of this variable node
+		ntypes
+			The number of types associated with this variable node
+		observed
+			Whether or not this variable is observed (currently not
+			really used)
+		"""
 		super().__init__(label)
 		# Not sure whether we'll actually need this (if we do,
 		# it would just be for variable nodes corresponding to
 		# particular annotations), but I'm leaving it in just in case.
 		self.observed = observed
+		self.ntypes = ntypes
 
 	@property
 	def type(self):
@@ -180,7 +192,7 @@ class FactorNode(Node):
 		self._factor = factor
 
 		# Used to track optimal values for max-product
-		self._record = None
+		self._record = {}
 
 	@property
 	def type(self):
@@ -219,7 +231,13 @@ class LikelihoodFactorNode(FactorNode):
 	def sum_product(self, target_node: VariableNode) -> Tensor:
 		# Compute per-property log likelihoods for each of the
 		# relevant event types
-		likelihoods = self.factor(mus, annotation)
+		likelihoods = self.factor(self.mus, self.annotation)
+
+		# If the annotation does not include properties of interest,
+		# the returned likelihoods will be empty. The likelihood in
+		# this case is 1, so we return a tensor of log(1) == 0 values. 
+		if len(likelihoods) == 0:
+			return torch.zeros(target_node.ntypes)
 
 		# Sum the per-property log likelihoods to obtain overall,
 		# per-type likelihoods (with dimension equal to the number
@@ -293,20 +311,28 @@ class PriorFactorNode(FactorNode):
 			# incoming message to the outgoing one
 			outgoing_msg += incoming_msg.view(broadcast_shape) 
 
-		# The last dimension of the factor tensor is the only
-		# one not marginalized out
-		marginalize_dims = list(range(len(self.factor.shape)))[:-1]
-
-		# The actual passing of the message is performed by the
-		# graph-level sum_product call
+		"""
+		Marginalize over all dimensions except the one associated
+		with the target node, and return the result. The actual
+		passing of the message is performed by the graph-level
+		sum_product call
+		"""
+		target_dim = self.graph[self][target_node].factor_dim
+		marginalize_dims = [i for i in range(len(self.factor.shape)) if i != target_dim]
 		return logsumexp(outgoing_msg, marginalize_dims)
 
 	@overrides
 	def max_product(self, target_node: VariableNode) -> Tensor:
 		"""Max-product message passing to a variable node"""
+
+		# Record for storing optimal assignments for
+		# each incoming variable node
+		self.record[target_node] = {}
+
+		# Initialize the outgoing message
 		outgoing_msg = self.factor
 
-		# Loop over neighbors is the same as in sum-product
+		# Loop over incoming neighbors is the same as in sum-product
 		for n in self.neighbors(target_node):
 
 			# Get message
@@ -320,12 +346,27 @@ class PriorFactorNode(FactorNode):
 			# Sum
 			outgoing_msg += incoming_msg.view(broadcast_shape)
 
-		# TODO: track max value for each non-target variable node
+		# Identify the dimension associated with the target node,
+		# and take the max over all other dimensions
+		target_dim = self.graph[self][target_node].factor_dim
 
-		# Take the max over all dimensions except the last.
-		# This is a fancy workaround to do that, given that torch.max
-		# does not support max'ing over multiple dimensions
-		return outgoing_msg.view(outgoing_msg.size(-1), -1).max(dim=-1).values
+		# Take the max over the target dimension. (This is a fancy
+		# workaround to do that, given that torch.max does not
+		# support max'ing over multiple dimensions at once
+		maxes = outgoing_msg.view(outgoing_msg.size(target_dim), -1).max(dim=-1)
+
+		# Before returning the values, we record the max value for
+		# each incoming variable node, for each possible value of
+		# the target variable node.
+		max_over_shape = {i:dim for i, dim in enumerate(self.factor.shape) if i != target_dim}
+		max_indices = np.unravel_index(maxes.indices, tuple(max_over_shape.values()))
+		max_indices_by_factor_dim = dict(zip(max_over_shape.keys(), max_indices))
+		for n in self.neighbors(target_node):
+			factor_dim = self.graph[n][self].factor_dim
+			self.record[target_node][n] = max_indices_by_factor_dim[factor_dim]
+
+		# Return the max values
+		return maxes.values
 
 
 class Edge:
@@ -459,7 +500,7 @@ class FactorGraph(nx.Graph):
 		"""
 
 		# If no order is specified, visit factor nodes first, followed by
-		# variable nodes
+		# variable nodes (Think: should the order remain fixed every iteration?)
 		if order is None:
 			order = list(self._factor_nodes.items()) + list(self._variable_nodes.items())
 
