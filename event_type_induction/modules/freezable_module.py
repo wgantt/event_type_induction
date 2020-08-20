@@ -1,5 +1,6 @@
 from torch.nn import Module
 
+
 class FreezableModule(Module):
     """torch.nn.Module with an instance method freeze() for freezing parameters.
     """
