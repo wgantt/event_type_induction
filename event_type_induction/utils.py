@@ -5,7 +5,7 @@ from decomp import UDSCorpus, RawUDSDataset
 from event_type_induction.constants import *
 from glob import glob
 from pkg_resources import resource_filename
-from typing import Dict, Set, Tuple
+from typing import Dict, Generator, Set, Tuple
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
 	"""Fetch all of the annotator IDs from an annotated UDS corpus
@@ -84,3 +84,48 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
 	for path in annotation_paths:
 		annotation = RawUDSDataset.from_json(path)
 		uds.add_annotation(annotation)
+
+def parameter_grid(param_dict: Dict[str, Any]) -> Generator[Dict[str, Any]]:
+	"""Generator for training hyperparameter grid
+
+	Parameters
+	----------
+	param_dict
+		Dictionary containing the hyperparameters and their possible values
+	"""
+	ks = list(param_dict.keys())
+	vlists = []
+	for k, v in param_dict.items():
+		if isinstance(v, dict):
+			vlists.append(parameter_grid(v))
+		elif isinstance(v, list):
+			vlists.append(v)
+		else:
+			errmsg = ("param_dict must be a dictionary contining lists or "
+					  "recursively other param_dicts")
+			raise ValueError(errmsg)
+	for configuration in product(*vlists):
+		yield dict(zip(ks, configuration))
+
+def save_model(data_dict, ckpt_dir, file_name):
+	if not os.path.isdir(ckpt_dir):
+		os.makedirs(ckpt_dir)
+	ckpt_path = os.path.join(ckpt_dir, file_name)
+	torch.save(data_dict, ckpt_path)
+	return ckpt_path
+
+def save_model_with_args(params, model, initargs, ckpt_dir, file_name):
+    filtered_args = {}
+    for p in inspect.signature(model.__class__.__init__).parameters:
+        if p in initargs:
+            filtered_args[p] = initargs[p]
+    ckpt_dict = dict(params, **{'state_dict': model.state_dict(),
+                                'curr_hyper': filtered_args})
+    return save_model(ckpt_dict, ckpt_dir, file_name)
+
+def load_model_with_args(cls, ckpt_path):
+    ckpt_dict = torch.load(ckpt_path)
+    hyper_params = ckpt_dict['curr_hyper']
+    model = cls(**hyper_params)
+    model.load_state_dict(ckpt_dict['state_dict'])
+    return model, hyper_params
