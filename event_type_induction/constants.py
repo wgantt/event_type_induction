@@ -23,11 +23,11 @@ PREDICATE_ANNOTATION_ATTRIBUTES = {
     "event_structure": {
         "natural_parts": {"type": BINARY, "dim": 1},
         "telic": {"type": BINARY, "dim": 1},
-        "situation_duration_lbound": {"type": NOMINAL, "dim": 11},
-        "situation_duration_ubound": {"type": NOMINAL, "dim": 11},
-        "avg_part_duration_lbound": {"type": NOMINAL, "dim": 11},
-        "avg_part_duration_ubound": {"type": NOMINAL, "dim": 11},
-        "similar_parts": {"type": BINARY, "dim": 1},
+        "situation_duration_lbound": {"type": NOMINAL, "dim": 12},
+        "situation_duration_ubound": {"type": NOMINAL, "dim": 12},
+        "avg_part_duration_lbound": {"type": NOMINAL, "dim": 12},
+        "avg_part_duration_ubound": {"type": NOMINAL, "dim": 12},
+        "part_similarity": {"type": BINARY, "dim": 1},
         "dynamic": {"type": BINARY, "dim": 1},
     },
 }

@@ -16,8 +16,8 @@ borrow heavily from danbar's Python factor graph library fglib
 (https://github.com/danbar/fglib)
 
 TODOs:
-	- Ensure tensors are sent to appropriate device
-	- Implement loopy max-product
+    - Ensure tensors are sent to appropriate device
+    - Implement loopy max-product
 """
 
 
@@ -68,10 +68,10 @@ class Node(ABC):
     def neighbors(self, exclusion: Optional["Node"] = None):
         """Retrieve all but an excluded set of this node's neighbors
 
-		exclusion
-			The neighbors to exclude (should only ever be a single
-			node --- the target)
-		"""
+        exclusion
+            The neighbors to exclude (should only ever be a single
+            node --- the target)
+        """
 
         if exclusion is None:
             return nx.all_neighbors(self.graph, self)
@@ -97,16 +97,16 @@ class VariableNode(Node):
     def __init__(self, label: str, ntypes: int, observed: bool = False):
         """Representation of a variable node in the factor graph
 
-		Parameters
-		----------
-		label
-			The name of this variable node
-		ntypes
-			The number of types associated with this variable node
-		observed
-			Whether or not this variable is observed (currently not
-			really used)
-		"""
+        Parameters
+        ----------
+        label
+            The name of this variable node
+        ntypes
+            The number of types associated with this variable node
+        observed
+            Whether or not this variable is observed (currently not
+            really used)
+        """
         super().__init__(label)
         # Not sure whether we'll actually need this
         self.observed = observed
@@ -126,13 +126,13 @@ class VariableNode(Node):
     def belief(self) -> Tensor:
         """Return the belief of the variable node
 
-		This method assumes that:
+        This method assumes that:
 
-		1. There are no self-loops (this node is not its own neighbor)
-		2. All neighbors are factor nodes
-		3. Messages are stored as log probabilities, and hence
-		   are added, not multiplied.
-		"""
+        1. There are no self-loops (this node is not its own neighbor)
+        2. All neighbors are factor nodes
+        3. Messages are stored as log probabilities, and hence
+           are added, not multiplied.
+        """
 
         # Fetch the neighbors
         neighbors = self.graph.neighbors(self)
@@ -180,12 +180,12 @@ class FactorNode(Node):
     def __init__(self, label: str, factor: Any):
         """Base class for all factor nodes
 
-		label
-			The name of the node
-		factor
-			Any object (tensor, module, etc.) used to compute the message
-			for this node
-		"""
+        label
+            The name of the node
+        factor
+            Any object (tensor, module, etc.) used to compute the message
+            for this node
+        """
         super().__init__(label)
         self._factor = factor
 
@@ -215,16 +215,16 @@ class LikelihoodFactorNode(FactorNode):
     ):
         """Unary leaf factors to compute annotation likelihoods
 
-		Parameters
-		----------
-		factor
-			A likelihood module used to obtain per-property likelihoods for
-			the provided annotation
-		mus
-			The mean values for each property
-		annotation
-			The annotation whose likelihood is to be computed
-		"""
+        Parameters
+        ----------
+        factor
+            A likelihood module used to obtain per-property likelihoods for
+            the provided annotation
+        mus
+            The mean values for each property
+        annotation
+            The annotation whose likelihood is to be computed
+        """
         super().__init__(label, factor)
         self.mus = mus
         self.annotation = annotation
@@ -265,31 +265,31 @@ class PriorFactorNode(FactorNode):
     def __init__(self, label: str, prior: Tensor):
         """Factors for priors on types
 
-		Parameters
-		----------
-		label
-			The name of the node
-		prior
-			A tensor containing the prior for the type of the
-			target variable node, indexed by the types of the
-			incoming variable nodes
-		"""
+        Parameters
+        ----------
+        label
+            The name of the node
+        prior
+            A tensor containing the prior for the type of the
+            target variable node, indexed by the types of the
+            incoming variable nodes
+        """
         super().__init__(label, prior)
 
     @overrides
     def sum_product(self, target_node: VariableNode) -> Tensor:
         """Sum-product message passing to a variable node
 
-		In this implementation of sum-product, "product" is actually
-		log addition and "sum" is logsumexp
+        In this implementation of sum-product, "product" is actually
+        log addition and "sum" is logsumexp
 
-		Parameters
-		----------
-		target_node
-			The variable node to which the message is to be passed
-		"""
+        Parameters
+        ----------
+        target_node
+            The variable node to which the message is to be passed
+        """
         # Initialize the message as the factor's tensor
-        outgoing_msg = self.factor
+        outgoing_msg = torch.zeros(self.factor.shape) + self.factor
 
         # For each incoming message (from a variable node),
         # add the message to the tensor along the appropriate
@@ -301,26 +301,32 @@ class PriorFactorNode(FactorNode):
 
             # Get the incoming message
             incoming_msg = edge.get_message(n, self)
+            if incoming_msg is None:
+                print(self.label)
 
             # Reshape appropriately so that it can be
             # added to the outgoing message. May want to
             # move this inside the get_message call itself.
             broadcast_shape = [1] * len(self.factor.shape)
-            broadcast_shape[edge.factor_dim] = len(incoming_message)
+            broadcast_shape[edge.factor_dim] = len(incoming_msg)
 
             # Use tensor broadcasting to add in the
             # incoming message to the outgoing one
             outgoing_msg += incoming_msg.view(broadcast_shape)
 
         """
-		Marginalize over all dimensions except the one associated
-		with the target node, and return the result. The actual
-		passing of the message is performed by the graph-level
-		sum_product call
-		"""
-        target_dim = self.graph[self][target_node].factor_dim
-        marginalize_dims = [i for i in range(len(self.factor.shape)) if i != target_dim]
-        return logsumexp(outgoing_msg, marginalize_dims)
+        Marginalize over all dimensions except the one associated
+        with the target node, and return the result---but obviously
+        only if there are other dimensions to marginalize. The actual
+        passing of the message is performed by the graph-level
+        sum_product call
+        """
+        if len(self.factor.shape) > 1:
+            target_dim = self.graph[self][target_node]["object"].factor_dim
+            marginalize_dims = [i for i in range(len(self.factor.shape)) if i != target_dim]
+            return logsumexp(outgoing_msg, marginalize_dims)
+        else:
+            return logsumexp(outgoing_msg, 0)
 
     @overrides
     def max_product(self, target_node: VariableNode) -> Tensor:
@@ -373,14 +379,23 @@ class PriorFactorNode(FactorNode):
 
 
 class Edge:
-    def __init__(self, source_node: Node, target_node: Node, factor_dim=0, msg_init=0):
+    def __init__(self, source_node: Node, target_node: Node, factor_dim=0):
         """Base class for edges
 
-		Messages are tracked are separately for each direction (obviously)
-		"""
+        Messages are tracked are separately for each direction (obviously)
+        """
 
         # Array Index
         self.index = {source_node: 0, target_node: 1}
+
+        # Initialize the messages
+        if isinstance(source_node, VariableNode):
+            msg_dim = source_node.ntypes
+        elif isinstance(target_node, VariableNode):
+            msg_dim = target_node.ntypes
+        else:
+            raise ValueError(f"Edge from {source_node.label} to {target_node.label} connects two factor nodes!")
+        msg_init = torch.zeros(msg_dim)
 
         # Set the message
         self.message = [[None, msg_init], [msg_init, None]]
@@ -416,28 +431,28 @@ class FactorGraph(nx.Graph):
     def get_node_name(ntype: str, *args: Tuple[str]) -> str:
         """Generates a factor graph node name
 
-		The name consists of the values in args separated by '-',
-		and postfixed with the node type. By convetion, use 'v'
-		for variable nodes, 'lf' for likelihood factor nodes,
-		and 'pf' for prior factor nodes
+        The name consists of the values in args separated by '-',
+        and postfixed with the node type. By convetion, use 'v'
+        for variable nodes, 'lf' for likelihood factor nodes,
+        and 'pf' for prior factor nodes
 
-		Parameters
-		----------
-		ntype
-			The type of node
-		args
-			Other components of the name
-		"""
+        Parameters
+        ----------
+        ntype
+            The type of node
+        args
+            Other components of the name
+        """
         return "-".join([*args, ntype])
 
     def set_node(self, node: Node) -> None:
         """Add a single node to the factor graph.
 
-		Parameters
-		----------
-		node
-			The node to be added
-		"""
+        Parameters
+        ----------
+        node
+            The node to be added
+        """
         node.graph = self
         if node.type == NodeType.VARIABLE:
             self.variable_nodes[node.label] = node
@@ -449,25 +464,25 @@ class FactorGraph(nx.Graph):
 
         self.add_node(node, type=node.type)
 
-    def set_edge(self, node1: Node, node2: Node, factor_dim=0, init_msg=None) -> None:
+    def set_edge(self, node1: Node, node2: Node, factor_dim=0) -> None:
         """Add a single edge to the factor graph
 
-		all edges are undirected and connect a variable node
-		to a factor node
+        all edges are undirected and connect a variable node
+        to a factor node
 
-		Parameters
-		----------
-		node1
-			the first node incident on the edge
-		node2
-			the second node incident on the edge
-		factor_dim
-			the dimension of the factor node's tensor with which
-			the variable node is associated
-		init_msg
-			the value with which to initialize the message(s)
-			for this edge
-		"""
+        Parameters
+        ----------
+        node1
+            the first node incident on the edge
+        node2
+            the second node incident on the edge
+        factor_dim
+            the dimension of the factor node's tensor with which
+            the variable node is associated
+        init_msg
+            the value with which to initialize the message(s)
+            for this edge
+        """
         # Verify that each edge connects a variable node to a factor node,
         # then identify which is which
         if node1.type == node2.type:
@@ -475,7 +490,7 @@ class FactorGraph(nx.Graph):
                 f"Attempted to create edge between {node1.label} "
                 f"and {node2.label}, but they have the same type ({node1.type}!"
             )
-        self.add_edge(node1, node2, object=Edge(node1, node2, factor_dim, init_msg))
+        self.add_edge(node1, node2, object=Edge(node1, node2, factor_dim))
 
     @property
     def variable_nodes(self):
@@ -488,40 +503,41 @@ class FactorGraph(nx.Graph):
     def loopy_sum_product(
         self,
         n_iters: int,
-        query_nodes: Optional[List[VariableNode]] = None,
+        query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[VariableNode]] = None,
     ) -> Dict[str, float]:
         """Loopy belief propagation
 
-		Parameters
-		----------
-		n_iters
-			The number of iterations for which to run message passing
-		query_nodes
-			The nodes whose beliefs are to be tracked
-		order
-			The order in which to visit nodes in the graph. For loopy BP,
-			any order is technically permissible
-		"""
+        Parameters
+        ----------
+        n_iters
+            The number of iterations for which to run message passing
+        query_nodes
+            The nodes whose beliefs are to be tracked
+        order
+            The order in which to visit nodes in the graph. For loopy BP,
+            any order is technically permissible
+        """
 
         # If no order is specified, visit factor nodes first, followed by
         # variable nodes (Think: should the order remain fixed every iteration?)
         if order is None:
-            order = list(self._factor_nodes.items()) + list(
-                self._variable_nodes.items()
+            order = list(self._factor_nodes.values()) + list(
+                self._variable_nodes.values()
             )
 
         # Track the beliefs of each query node
         beliefs = {n.label: 0 for n in query_nodes}
 
+        # Do message passing for the specified number of iterations
         for _ in range(n_iters):
             for node in order:
                 for neighbor in node.neighbors():
                     msg = node.sum_product(neighbor)
-                    self[node][neighbor]["object"].set_message(node, neighbor)
+                    self[node][neighbor]["object"].set_message(node, neighbor, msg)
 
         # Return final beliefs for query nodes
-        for n in query_node:
+        for n in query_nodes:
             beliefs[n.label] = n.belief()
 
         return beliefs

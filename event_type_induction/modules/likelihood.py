@@ -60,6 +60,12 @@ class Likelihood(Module, metaclass=ABCMeta):
                     # single annotation)
                     for annotator, value in props[p]["value"].items():
 
+                        # TODO: handle None-valued UDS-EventStructure
+                        # annotations. I don't think there are other protocols
+                        # liable to have None-valued annotations
+                        if value is None:
+                            continue
+
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[annotator][prop_name]
 

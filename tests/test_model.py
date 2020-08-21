@@ -37,6 +37,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.test_doc = cls.uds.documents[cls.test_doc_id]
         cls.test_fg = cls.model.construct_factor_graph(cls.test_doc)
 
+    @unittest.skip("Faster iteration on other tests")
     def test_factor_graph_construction(self):
         uds = self.__class__.uds
         model = self.__class__.model
@@ -195,7 +196,8 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     var_node, relation_pf_node
                 ), f"{(v1, v2)} has no edge between {var_node} and the prior factor node"
 
-    def test_node_initialization(self):
+    @unittest.skip("Faster iteration on other tests")
+    def test_node_and_edge_initialization(self):
         uds = self.__class__.uds
         model = self.__class__.model
 
@@ -279,3 +281,17 @@ class TestEventTypeInductionModel(unittest.TestCase):
                 assert (
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
+
+    def test_loopy_sum_product(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+
+        # A test document
+        test_doc_id = self.__class__.test_doc_id
+        test_doc = self.__class__.test_doc
+
+        # The factor graph
+        fg = self.__class__.test_fg
+
+        # Test loopy sum-product
+        fg.loopy_sum_product(1)
