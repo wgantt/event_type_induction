@@ -195,43 +195,43 @@ class EventTypeInductionModel(FreezableModule):
 
                 # Add a variable node for the predicate's event type,
                 # but only if one is not already in the graph
-                pred_event_v_node_name = FactorGraph.get_node_name("v", pred, "event")
-                if not pred_event_v_node_name in fg.variable_nodes:
-                    pred_event_v_node = VariableNode(
-                        pred_event_v_node_name, self.n_event_types
+                event_v_node_name = FactorGraph.get_node_name("v", pred, "event")
+                if not event_v_node_name in fg.variable_nodes:
+                    event_v_node = VariableNode(
+                        event_v_node_name, self.n_event_types
                     )
-                    fg.set_node(pred_event_v_node)
+                    fg.set_node(event_v_node)
                 else:
-                    pred_event_v_node = fg.variable_nodes[pred_event_v_node_name]
+                    event_v_node = fg.variable_nodes[event_v_node_name]
 
                 # Similarly add a variable node for the argument's
                 # type, but only if it isn't already in the graph
-                arg_participant_v_node_name = FactorGraph.get_node_name(
+                participant_v_node_name = FactorGraph.get_node_name(
                     "v", arg, "participant"
                 )
-                if not arg_participant_v_node_name in fg.variable_nodes:
-                    arg_participant_v_node = VariableNode(
-                        arg_participant_v_node_name, self.n_participant_types
+                if not participant_v_node_name in fg.variable_nodes:
+                    participant_v_node = VariableNode(
+                        participant_v_node_name, self.n_participant_types
                     )
-                    fg.set_node(arg_participant_v_node)
+                    fg.set_node(participant_v_node)
                 else:
-                    arg_participant_v_node = fg.variable_nodes[
-                        arg_participant_v_node_name
+                    participant_v_node = fg.variable_nodes[
+                        participant_v_node_name
                     ]
 
                 # Add a variable node for the predicate's role type.
                 # Roles are relational, so we add one for *each* semantics edge.
-                arg_role_v_node = VariableNode(
+                role_v_node = VariableNode(
                     FactorGraph.get_node_name("v", v1, v2, "role"), self.n_role_types
                 )
-                fg.set_node(arg_role_v_node)
+                fg.set_node(role_v_node)
 
                 # LIKELIHOOD FACTOR NODES ---------------------------
 
                 # Add a likelihood factor for the predicate. This is a unary
                 # factor that computes the likelihood of the node's annotations.
                 pred_node_anno = sentence.predicate_nodes[pred]
-                pred_lf_node_name = FactorGraph.get_node_name("lf", pred, "event")
+                pred_lf_node_name = FactorGraph.get_node_name("lf", pred)
                 if not pred_lf_node_name in fg.factor_nodes:
                     pred_lf_node = LikelihoodFactorNode(
                         pred_lf_node_name,
@@ -240,48 +240,48 @@ class EventTypeInductionModel(FreezableModule):
                         pred_node_anno,
                     )
                     fg.set_node(pred_lf_node)
-                    fg.set_edge(pred_lf_node, pred_event_v_node, 0)
+                    fg.set_edge(pred_lf_node, event_v_node, 0)
                 else:
                     pred_lf_node = fg.factor_nodes[pred_lf_node_name]
 
                 # Do the same for the argument.
                 arg_node_anno = sentence.argument_nodes[arg]
-                arg_lf_node_name = FactorGraph.get_node_name("lf", arg, "role")
+                arg_lf_node_name = FactorGraph.get_node_name("lf", arg)
                 if not arg_lf_node_name in fg.factor_nodes:
                     arg_lf_node = LikelihoodFactorNode(
-                        FactorGraph.get_node_name("lf", arg, "role"),
+                        arg_lf_node_name,
                         self.arg_node_likelihood,
-                        self.role_mus,
+                        self.participant_mus,
                         arg_node_anno,
                     )
                     fg.set_node(arg_lf_node)
+                    fg.set_edge(arg_lf_node, participant_v_node, 0)
                 else:
                     arg_lf_node = fg.factor_nodes[arg_lf_node_name]
-                fg.set_edge(arg_lf_node, arg_role_v_node, 0)
 
                 # We also add a likelihood factor node for the semantics
                 # edge annotations. This is conditioned only on the
                 # argument's participant type
                 sem_edge_lf_node = LikelihoodFactorNode(
-                    FactorGraph.get_node_name("lf", v1, v2, "participant"),
+                    FactorGraph.get_node_name("lf", v1, v2),
                     self.semantics_edge_likelihood,
-                    self.participant_mus,
+                    self.role_mus,
                     sem_edge_anno,
                 )
                 fg.set_node(sem_edge_lf_node)
-                fg.set_edge(sem_edge_lf_node, arg_participant_v_node, 0)
+                fg.set_edge(sem_edge_lf_node, role_v_node, 0)
 
                 # PRIOR FACTOR NODES --------------------------------
 
                 # Create a prior factor for the predicate's event type,
                 # which depends only on the predicate event type variable
-                pred_event_pf_node_name = FactorGraph.get_node_name("pf", pred, "event")
-                if pred_event_pf_node_name not in fg.factor_nodes:
-                    pred_event_pf_node = PriorFactorNode(
+                event_pf_node_name = FactorGraph.get_node_name("pf", pred, "event")
+                if event_pf_node_name not in fg.factor_nodes:
+                    event_pf_node = PriorFactorNode(
                         FactorGraph.get_node_name("pf", pred, "event"), self.event_probs
                     )
-                    fg.set_node(pred_event_pf_node)
-                    fg.set_edge(pred_event_pf_node, pred_event_v_node, 0)
+                    fg.set_node(event_pf_node)
+                    fg.set_edge(event_pf_node, event_v_node, 0)
 
                 # Add a prior factor node for the participant type
                 # (only one per argument). This depends only on the
@@ -300,7 +300,7 @@ class EventTypeInductionModel(FreezableModule):
                         participant_type_pf_node_name, participant_probs
                     )
                     fg.set_node(participant_type_pf_node)
-                    fg.set_edge(participant_type_pf_node, arg_participant_v_node, 0)
+                    fg.set_edge(participant_type_pf_node, participant_v_node, 0)
 
                 """
                 Add a prior factor for the argument's role type
@@ -309,13 +309,13 @@ class EventTypeInductionModel(FreezableModule):
                 the argument's participant type and the associated
                 predicate's event type
                 """
-                arg_role_pf_node = PriorFactorNode(
+                role_pf_node = PriorFactorNode(
                     FactorGraph.get_node_name("pf", v1, v2, "role"), self.role_probs
                 )
-                fg.set_node(arg_role_pf_node)
-                fg.set_edge(arg_role_pf_node, pred_event_v_node, 0)
-                fg.set_edge(arg_role_pf_node, arg_participant_v_node, 1)
-                fg.set_edge(arg_role_pf_node, arg_role_v_node, 2)
+                fg.set_node(role_pf_node)
+                fg.set_edge(role_pf_node, event_v_node, 0)
+                fg.set_edge(role_pf_node, participant_v_node, 1)
+                fg.set_edge(role_pf_node, role_v_node, 2)
 
         # Generate document-level graph structure second (as it depends on the
         # sentence-level structure)
@@ -324,33 +324,33 @@ class EventTypeInductionModel(FreezableModule):
             # VARIABLE NODES ------------------------------------
 
             # Create a variable node for the edge itself
-            doc_edge_v_node = VariableNode(
+            relation_v_node = VariableNode(
                 FactorGraph.get_node_name("v", v1, v2, "relation"),
                 self.n_relation_types,
             )
-            fg.set_node(doc_edge_v_node)
+            fg.set_node(relation_v_node)
 
             # LIKELIHOOD FACTOR NODES ---------------------------
 
             # Create a likelihood factor node for its annotations
             doc_edge_lf_node = LikelihoodFactorNode(
-                FactorGraph.get_node_name("lf", v1, v2, "relation"),
+                FactorGraph.get_node_name("lf", v1, v2),
                 self.doc_edge_likelihood,
                 self.relation_mus,
                 doc_edge_anno,
             )
             fg.set_node(doc_edge_lf_node)
-            fg.set_edge(doc_edge_v_node, doc_edge_lf_node, 0)
+            fg.set_edge(relation_v_node, doc_edge_lf_node, 0)
 
             # PRIOR FACTOR NODES --------------------------------
 
             # Create a factor for the prior over the relation type
             # and connect it with the document edge variable node
-            doc_edge_pf_node = PriorFactorNode(
+            relation_pf_node = PriorFactorNode(
                 FactorGraph.get_node_name("pf", v1, v2, "relation"), self.relation_probs
             )
-            fg.set_node(doc_edge_pf_node)
-            fg.set_edge(doc_edge_v_node, doc_edge_pf_node, 2)
+            fg.set_node(relation_pf_node)
+            fg.set_edge(relation_v_node, relation_pf_node, 2)
 
             # We also connect this factor node to the variable nodes for
             # the predicates or arguments it relates.
@@ -380,7 +380,7 @@ class EventTypeInductionModel(FreezableModule):
 
                 # Connect the variable node to the prior factor node for the
                 # document edge
-                fg.set_edge(var_node, doc_edge_pf_node, factor_dim)
+                fg.set_edge(var_node, relation_pf_node, factor_dim)
 
         return fg
 

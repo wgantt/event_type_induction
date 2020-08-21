@@ -1,4 +1,5 @@
 import networkx as nx
+import torch
 
 from abc import ABC, abstractmethod, abstractproperty
 from decomp.semantics.uds import UDSSentenceGraph, UDSDocumentGraph
@@ -94,7 +95,7 @@ class Node(ABC):
 
 class VariableNode(Node):
     def __init__(self, label: str, ntypes: int, observed: bool = False):
-        """Representation of a variable node in the factor graaph
+        """Representation of a variable node in the factor graph
 
 		Parameters
 		----------
@@ -107,23 +108,20 @@ class VariableNode(Node):
 			really used)
 		"""
         super().__init__(label)
-        # Not sure whether we'll actually need this (if we do,
-        # it would just be for variable nodes corresponding to
-        # particular annotations), but I'm leaving it in just in case.
+        # Not sure whether we'll actually need this
         self.observed = observed
+
+        # The number of types associated with this variable node
         self.ntypes = ntypes
+
+        # Initialize the message for this variable node. We
+        # initialize with zeros (log(1)), as the actual probabilities
+        # for each type will come from the likelihood factors
+        self.init = torch.zeros(self.ntypes)
 
     @property
     def type(self):
         return NodeType.VARIABLE
-
-    @property
-    def init(self):
-        return self._init
-
-    @init.setter
-    def init(self, init: Tensor):
-        self._init = init
 
     def belief(self) -> Tensor:
         """Return the belief of the variable node
@@ -150,7 +148,7 @@ class VariableNode(Node):
         for n in neighbors:
             belief += self.graph[n][self]["object"].get_message(n, self)
 
-        # TODO: add option for normalizing
+        # TODO: does it matter whether we normalize?
         return belief
 
     @overrides
