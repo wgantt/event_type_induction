@@ -5,7 +5,7 @@ from decomp import UDSCorpus, RawUDSDataset
 from event_type_induction.constants import *
 from glob import glob
 from pkg_resources import resource_filename
-from typing import Dict, Generator, Set, Tuple
+from typing import Any, Dict, Generator, Set, Tuple
 
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
@@ -101,7 +101,7 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
         uds.add_annotation(annotation)
 
 
-def parameter_grid(param_dict: Dict[str, Any]) -> Generator[Dict[str, Any]]:
+def parameter_grid(param_dict: Dict[str, Any]):
     """Generator for training hyperparameter grid
 
 	Parameters

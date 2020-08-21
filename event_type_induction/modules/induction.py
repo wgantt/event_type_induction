@@ -29,9 +29,9 @@ from typing import Tuple
 class EventTypeInductionModel(FreezableModule):
     """Base module for event type induction
 
-	TODO
-		- Implement forward function
-	"""
+    TODO
+        - Implement forward function
+    """
 
     def __init__(
         self,
@@ -50,15 +50,15 @@ class EventTypeInductionModel(FreezableModule):
         self.random_seed = random_seed
         self.device = torch.device(device)
 
-        """
-		Initialize categorical distributions for the different types.
-		We do not place priors on any of these distributions, instead
-		initializing them randomly
-		"""
+        # Initialize categorical distributions for the different types.
+        # We do not place priors on any of these distributions,
+        # initializing them randomly instead
         self.n_event_types = n_event_types
         self.n_role_types = n_role_types
-        self.n_relation_types = n_relation_types
         self.n_entity_types = n_entity_types
+
+        # +1 for the "no-relation" relation
+        self.n_relation_types = n_relation_types + 1
 
         # Participants may be either events or entities
         self.n_participant_types = n_event_types + n_entity_types
@@ -70,29 +70,33 @@ class EventTypeInductionModel(FreezableModule):
         # Event types
         self.event_probs = clz._initialize_log_prob((self.n_event_types))
 
-        # Role types: separate distribution for each event type
+        # Participants are either events or entities, which is
+        # determined by a Bernoulli
+        self.participant_domain_prob = clz._initialize_log_prob((1))
+
+        # Entity-type participant probabilities (event-type participants
+        # are selected from event_probs above)
+        self.entity_probs = clz._initialize_log_prob((self.n_entity_types))
+
+        # Role types: separate distribution for each event type (of the
+        # predicate) and participant type (of the argument)
         self.role_probs = clz._initialize_log_prob(
-            (self.n_event_types, self.n_role_types)
+            (self.n_event_types, self.n_participant_types, self.n_role_types)
         )
 
-        # Relation types: separate distribution for each event type-role
-        # pair
-        # TODO: enforce constraints on relation values
+        # Relation types: separate distribution for each possible pairing
+        # of participant types
         self.relation_probs = clz._initialize_log_prob(
             (self.n_participant_types, self.n_participant_types, self.n_relation_types)
         )
 
-        """
-		Participant types: Participants can include events as well as things,
-		so we require separate distributions for these. Both are conditioned
-		on the event and the role
-		"""
-        self.event_participant_probs = clz._initialize_log_prob(
-            (self.n_event_types, self.n_role_types, self.n_event_types)
-        )
-        self.entity_participant_probs = clz._initialize_log_prob(
-            (self.n_event_types, self.n_role_types, self.n_entity_types)
-        )
+        # We enforce that the only possible relation type for a relation
+        # involving an entity participant is "no relation." This is
+        # because a relation can obtain only between two *events*
+        self.relation_probs[self.n_entity_types :, :, :-1] = NEG_INF  # = log(0)
+        self.relation_probs[self.n_entity_types :, :, -1] = 0  # = log(1)
+        self.relation_probs[:, self.n_entity_types :, :-1] = NEG_INF
+        self.relation_probs[:, self.n_entity_types :, -1] = 0
 
         # Initialize mus (expected annotations)
         self.event_mus = clz._initialize_mus(
@@ -146,24 +150,24 @@ class EventTypeInductionModel(FreezableModule):
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
         """Unit random normal-based initialization for model parameters
 
-		The result is returned as log probabilities
-		"""
+        The result is returned as log probabilities
+        """
         return Parameter(torch.log(softmax(torch.randn(shape), -1)))
 
     def construct_factor_graph(self, document: UDSDocumentGraph) -> FactorGraph:
         """Construct the factor graph for a document
 
-		Parameters
-		----------
-		document
-			The UDSDocumentGraph for which to construct the factor graph
+        Parameters
+        ----------
+        document
+            The UDSDocumentGraph for which to construct the factor graph
 
-		TODO:
-			- Verify that messages are initialized according to the uniform
-			  distribution
-			- Verify that variable nodes are added only for nodes or edges
-			  that are actually annotated
-		"""
+        TODO:
+            - Verify that messages are initialized according to the uniform
+              distribution
+            - Verify that variable nodes are added only for nodes or edges
+              that are actually annotated
+        """
 
         # Initialize the factor graph
         fg = FactorGraph()
@@ -187,106 +191,150 @@ class EventTypeInductionModel(FreezableModule):
                 else:
                     pred, arg = v2, v1
 
-                # Add both as variable nodes
-                pred_v_node = VariableNode(
-                    FactorGraph.get_node_name("v", pred), self.n_event_types
-                )
-                arg_v_node = VariableNode(
-                    FactorGraph.get_node_name("v", arg), self.n_role_types
-                )
-                fg.set_node(pred_v_node)
-                fg.set_node(arg_v_node)
+                # VARIABLE NODES ------------------------------------
 
-                # Add a likelihood factor for both the predicate and the
-                # argument. These are unary factors that compute the likelihood
-                # of the annotations on each
+                # Add a variable node for the predicate's event type,
+                # but only if one is not already in the graph
+                pred_event_v_node_name = FactorGraph.get_node_name("v", pred, "event")
+                if not pred_event_v_node_name in fg.variable_nodes:
+                    pred_event_v_node = VariableNode(
+                        pred_event_v_node_name, self.n_event_types
+                    )
+                    fg.set_node(pred_event_v_node)
+                else:
+                    pred_event_v_node = fg.variable_nodes[pred_event_v_node_name]
+
+                # Similarly add a variable node for the argument's
+                # type, but only if it isn't already in the graph
+                arg_participant_v_node_name = FactorGraph.get_node_name(
+                    "v", arg, "participant"
+                )
+                if not arg_participant_v_node_name in fg.variable_nodes:
+                    arg_participant_v_node = VariableNode(
+                        arg_participant_v_node_name, self.n_participant_types
+                    )
+                    fg.set_node(arg_participant_v_node)
+                else:
+                    arg_participant_v_node = fg.variable_nodes[
+                        arg_participant_v_node_name
+                    ]
+
+                # Add a variable node for the predicate's role type.
+                # Roles are relational, so we add one for *each* semantics edge.
+                arg_role_v_node = VariableNode(
+                    FactorGraph.get_node_name("v", v1, v2, "role"), self.n_role_types
+                )
+                fg.set_node(arg_role_v_node)
+
+                # LIKELIHOOD FACTOR NODES ---------------------------
+
+                # Add a likelihood factor for the predicate. This is a unary
+                # factor that computes the likelihood of the node's annotations.
                 pred_node_anno = sentence.predicate_nodes[pred]
+                pred_lf_node_name = FactorGraph.get_node_name("lf", pred, "event")
+                if not pred_lf_node_name in fg.factor_nodes:
+                    pred_lf_node = LikelihoodFactorNode(
+                        pred_lf_node_name,
+                        self.pred_node_likelihood,
+                        self.event_mus,
+                        pred_node_anno,
+                    )
+                    fg.set_node(pred_lf_node)
+                    fg.set_edge(pred_lf_node, pred_event_v_node, 0)
+                else:
+                    pred_lf_node = fg.factor_nodes[pred_lf_node_name]
+
+                # Do the same for the argument.
                 arg_node_anno = sentence.argument_nodes[arg]
-                pred_lf_node = LikelihoodFactorNode(
-                    FactorGraph.get_node_name("lf", pred),
-                    self.pred_node_likelihood,
-                    self.event_mus,
-                    pred_node_anno,
-                )
-                arg_lf_node = LikelihoodFactorNode(
-                    FactorGraph.get_node_name("lf", arg),
-                    self.arg_node_likelihood,
-                    self.role_mus,
-                    arg_node_anno,
-                )
-                fg.set_node(pred_lf_node)
-                fg.set_node(arg_lf_node)
+                arg_lf_node_name = FactorGraph.get_node_name("lf", arg, "role")
+                if not arg_lf_node_name in fg.factor_nodes:
+                    arg_lf_node = LikelihoodFactorNode(
+                        FactorGraph.get_node_name("lf", arg, "role"),
+                        self.arg_node_likelihood,
+                        self.role_mus,
+                        arg_node_anno,
+                    )
+                    fg.set_node(arg_lf_node)
+                else:
+                    arg_lf_node = fg.factor_nodes[arg_lf_node_name]
+                fg.set_edge(arg_lf_node, arg_role_v_node, 0)
 
-                # Connect the likelihood factor nodes to their variable nodes
-                fg.set_edge(pred_lf_node, pred_v_node, 0)
-                fg.set_edge(arg_lf_node, arg_v_node, 0)
-
-                # Also create a prior factor for each
-                pred_pf_node = PriorFactorNode(
-                    FactorGraph.get_node_name("pf", pred), self.event_probs
-                )
-                arg_pf_node = PriorFactorNode(
-                    FactorGraph.get_node_name("pf", arg), self.role_probs
-                )
-                fg.set_node(pred_pf_node)
-                fg.set_node(arg_pf_node)
-
-                # The prior factor for the predicate (over event types)
-                # is unary, but the one for the predicate (over role types)
-                # additionally depends on the (event type of the) predicate.
-                fg.set_edge(pred_pf_node, pred_v_node, 0)
-                fg.set_edge(arg_pf_node, pred_v_node, 0)
-                fg.set_edge(arg_pf_node, arg_v_node, 1)
-
-                # Add a variable node for the semantics edge itself
-                sem_edge_v_node = VariableNode(
-                    FactorGraph.get_node_name("v", v1, v2), self.n_participant_types
-                )
-                fg.set_node(sem_edge_v_node)
-
-                # Add a likelihood factor node for the semantics edge
-                # annotations
+                # We also add a likelihood factor node for the semantics
+                # edge annotations. This is conditioned only on the
+                # argument's participant type
                 sem_edge_lf_node = LikelihoodFactorNode(
-                    FactorGraph.get_node_name("lf", v1, v2),
+                    FactorGraph.get_node_name("lf", v1, v2, "participant"),
                     self.semantics_edge_likelihood,
                     self.participant_mus,
                     sem_edge_anno,
                 )
                 fg.set_node(sem_edge_lf_node)
+                fg.set_edge(sem_edge_lf_node, arg_participant_v_node, 0)
 
-                # Connect the semantics edge likelihood factor and variable nodes
-                fg.set_edge(sem_edge_v_node, sem_edge_lf_node, 0)
+                # PRIOR FACTOR NODES --------------------------------
 
-                # Add a prior factor node for the participant type itself
-                # The associated tensor contains the probabilities for both
-                # event and entity participants.
-                participant_probs = torch.cat(
-                    [self.event_participant_probs, self.entity_participant_probs], dim=2
+                # Create a prior factor for the predicate's event type,
+                # which depends only on the predicate event type variable
+                pred_event_pf_node_name = FactorGraph.get_node_name("pf", pred, "event")
+                if pred_event_pf_node_name not in fg.factor_nodes:
+                    pred_event_pf_node = PriorFactorNode(
+                        FactorGraph.get_node_name("pf", pred, "event"), self.event_probs
+                    )
+                    fg.set_node(pred_event_pf_node)
+                    fg.set_edge(pred_event_pf_node, pred_event_v_node, 0)
+
+                # Add a prior factor node for the participant type
+                # (only one per argument). This depends only on the
+                # argument's participant type variable.
+                participant_type_pf_node_name = FactorGraph.get_node_name(
+                    "pf", arg, "participant"
                 )
-                participant_type_pf_node = PriorFactorNode(
-                    FactorGraph.get_node_name("pf", v1, v2), participant_probs
-                )
-                fg.set_node(participant_type_pf_node)
+                if participant_type_pf_node_name not in fg.factor_nodes:
+                    participant_probs = torch.cat(
+                        [
+                            self.event_probs + self.participant_domain_prob,
+                            self.entity_probs - self.participant_domain_prob,
+                        ]
+                    )
+                    participant_type_pf_node = PriorFactorNode(
+                        participant_type_pf_node_name, participant_probs
+                    )
+                    fg.set_node(participant_type_pf_node)
+                    fg.set_edge(participant_type_pf_node, arg_participant_v_node, 0)
 
-                # This factor depends on the event type of the predicate,
-                # the role type of the argument, and the participant type
-                fg.set_edge(participant_type_pf_node, pred_v_node, 0)
-                fg.set_edge(participant_type_pf_node, arg_v_node, 1)
-                fg.set_edge(participant_type_pf_node, sem_edge_v_node, 2)
+                """
+                Add a prior factor for the argument's role type
+                (one per semantics edge). This depends not only
+                on the argument role type variable, but also on
+                the argument's participant type and the associated
+                predicate's event type
+                """
+                arg_role_pf_node = PriorFactorNode(
+                    FactorGraph.get_node_name("pf", v1, v2, "role"), self.role_probs
+                )
+                fg.set_node(arg_role_pf_node)
+                fg.set_edge(arg_role_pf_node, pred_event_v_node, 0)
+                fg.set_edge(arg_role_pf_node, arg_participant_v_node, 1)
+                fg.set_edge(arg_role_pf_node, arg_role_v_node, 2)
 
         # Generate document-level graph structure second (as it depends on the
         # sentence-level structure)
         for (v1, v2), doc_edge_anno in document.document_graph.edges.items():
 
+            # VARIABLE NODES ------------------------------------
+
             # Create a variable node for the edge itself
             doc_edge_v_node = VariableNode(
-                FactorGraph.get_node_name("v", v1, v2), self.n_relation_types
+                FactorGraph.get_node_name("v", v1, v2, "relation"),
+                self.n_relation_types,
             )
             fg.set_node(doc_edge_v_node)
 
+            # LIKELIHOOD FACTOR NODES ---------------------------
+
             # Create a likelihood factor node for its annotations
             doc_edge_lf_node = LikelihoodFactorNode(
-                FactorGraph.get_node_name("lf", v1, v2),
+                FactorGraph.get_node_name("lf", v1, v2, "relation"),
                 self.doc_edge_likelihood,
                 self.relation_mus,
                 doc_edge_anno,
@@ -294,10 +342,12 @@ class EventTypeInductionModel(FreezableModule):
             fg.set_node(doc_edge_lf_node)
             fg.set_edge(doc_edge_v_node, doc_edge_lf_node, 0)
 
+            # PRIOR FACTOR NODES --------------------------------
+
             # Create a factor for the prior over the relation type
             # and connect it with the document edge variable node
             doc_edge_pf_node = PriorFactorNode(
-                FactorGraph.get_node_name("lf", v1, v2), self.relation_probs
+                FactorGraph.get_node_name("pf", v1, v2, "relation"), self.relation_probs
             )
             fg.set_node(doc_edge_pf_node)
             fg.set_edge(doc_edge_v_node, doc_edge_pf_node, 2)
@@ -306,23 +356,27 @@ class EventTypeInductionModel(FreezableModule):
             # the predicates or arguments it relates.
             for factor_dim, var_node_name in enumerate([v1, v2]):
 
+                # Identify the variable node for the predicate/argument
+                # (It must have been created in the sentence-level loop)
+                sem_node_name = var_node_name.replace("document", "semantics")
                 if "pred" in var_node_name:
-                    # Fetch the variable node for the semantics node of the
-                    # predicate
-                    pred_node_name = var_node_name.replace("document", "semantics")
-                    fg_node_name = FactorGraph.get_node_name("v", pred_node_name)
+                    # Fetch the variable node for the predicate's event type
+                    fg_node_name = FactorGraph.get_node_name(
+                        "v", sem_node_name, "event"
+                    )
                 else:
-                    # Fetch the variable node for the semantics *edge*
-                    # associated with the argument
-                    fg_node_name = FactorGraph.get_node_name("v", v1, v2)
-
+                    # Fetch the variable node for the argument's
+                    # participant type
+                    fg_node_name = FactorGraph.get_node_name(
+                        "v", sem_node_name, "participant"
+                    )
                 var_node = fg.variable_nodes.get(fg_node_name)
 
                 # Verify that the variable node was in fact created in
-                # the sentence-level loop above
+                # the sentence-level loop
                 assert (
                     var_node is not None
-                ), f"Variable node {var_node} not found in factor graph"
+                ), f"Variable node {var_node_name} not found in factor graph; annotations: {doc_edge_anno}"
 
                 # Connect the variable node to the prior factor node for the
                 # document edge
