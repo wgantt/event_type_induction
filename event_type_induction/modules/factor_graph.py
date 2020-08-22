@@ -1,4 +1,5 @@
 import networkx as nx
+import numpy as np
 import torch
 
 from abc import ABC, abstractmethod, abstractproperty
@@ -271,7 +272,7 @@ class LikelihoodFactorNode(FactorNode):
         # A likelihood factor node's behavior is the same in the
         # max-product case as in the max-sum case; the only difference
         # is that we track the argmax for each type
-        per_type_likelihood = sum_product(target_node)
+        per_type_likelihood = self.sum_product(target_node)
         self.record[target_node] = per_type_likelihood.argmax()
         return per_type_likelihood
 
@@ -367,14 +368,14 @@ class PriorFactorNode(FactorNode):
 
             # Reshape
             broadcast_shape = [1] * len(self.factor.shape)
-            broadcast_shape[edge.factor_dim] = len(incoming_message)
+            broadcast_shape[edge.factor_dim] = len(incoming_msg)
 
             # Sum
             outgoing_msg += incoming_msg.view(broadcast_shape)
 
         # Identify the dimension associated with the target node,
         # and take the max over all other dimensions
-        target_dim = self.graph[self][target_node].factor_dim
+        target_dim = self.graph[self][target_node]["object"].factor_dim
 
         # Take the max over the target dimension. (This is a fancy
         # workaround to do that, given that torch.max does not
@@ -496,13 +497,13 @@ class DimensionMismatchEdge(Edge):
         event types.
         """
 
-        # variable --> factor: expand
+        # variable --> factor: expand message dimension
         if source_node.type == NodeType.VARIABLE:
             var_node, factor_node = source_node, target_node
             desired_msg_length = factor_node.factor.shape[self.factor_dim]
             new_msg = torch.ones(desired_msg_length) * NEG_INF
             new_msg[: len(msg)] = msg
-        # factor --> variable: contract
+        # factor --> variable: contract message dimension
         else:
             var_node, factor_node = target_node, source_node
             desired_msg_length = var_node.ntypes
@@ -571,9 +572,6 @@ class FactorGraph(nx.Graph):
         factor_dim
             the dimension of the factor node's tensor with which
             the variable node is associated
-        init_msg
-            the value with which to initialize the message(s)
-            for this edge
         """
         # Verify that each edge connects a variable node to a factor node,
         # then identify which is which
@@ -583,7 +581,12 @@ class FactorGraph(nx.Graph):
                 f"and {node2.label}, but they have the same type ({node1.type}!"
             )
 
+        # Default edge
         edge = Edge(node1, node2, factor_dim)
+
+        # Special case: dimension mismatch between variable and factor nodes.
+        # This should occur only between event type variable nodes and
+        # relation type factor nodes.
         if isinstance(node1, PriorFactorNode):
             if (
                 node1.vtype == VariableType.RELATION
@@ -596,6 +599,8 @@ class FactorGraph(nx.Graph):
                 and node1.vtype == VariableType.EVENT
             ):
                 edge = DimensionMismatchEdge(node1, node2, factor_dim)
+
+        # Add the edge to the NetworkX graph
         self.add_edge(node1, node2, object=edge)
 
     @property
@@ -610,9 +615,31 @@ class FactorGraph(nx.Graph):
         self,
         n_iters: int,
         query_nodes: Optional[List[VariableNode]] = [],
-        order: Optional[List[VariableNode]] = None,
+        order: Optional[List[Node]] = None,
     ) -> Dict[str, float]:
-        """Loopy belief propagation
+        return self.schedule(n_iters, 'sum_product', query_nodes, order)
+
+    def loopy_max_product(
+        self,
+        n_iters: int,
+        query_nodes: Optional[List[VariableNode]] = [],
+        order: Optional[List[Node]] = None,
+    ) -> Dict[str, int]:
+        """Loopy max-product"""
+        return self.schedule(n_iters, 'max_product', query_nodes, order)
+
+    def schedule(
+        self,
+        n_iters: int,
+        semiring: str,
+        query_nodes: Optional[List[VariableNode]] = [],
+        order: Optional[List[Node]] = None,
+    ) -> Dict[str, Any]:
+        """Runs message passing on graphs with cycles
+
+        If no order is specified, messages are updated for all factor
+        nodes first, followed by all variable nodes. This is the default
+        order specified in fglib, and I have preserved it here.
 
         Parameters
         ----------
@@ -625,8 +652,7 @@ class FactorGraph(nx.Graph):
             any order is technically permissible
         """
 
-        # If no order is specified, visit factor nodes first, followed by
-        # variable nodes (Think: should the order remain fixed every iteration?)
+        # Default order
         if order is None:
             order = list(self._factor_nodes.values()) + list(
                 self._variable_nodes.values()
@@ -639,7 +665,7 @@ class FactorGraph(nx.Graph):
         for _ in range(n_iters):
             for node in order:
                 for neighbor in node.neighbors():
-                    msg = node.sum_product(neighbor)
+                    msg = getattr(node, semiring)(neighbor)
                     self[node][neighbor]["object"].set_message(node, neighbor, msg)
 
         # Return final beliefs for query nodes
@@ -647,7 +673,3 @@ class FactorGraph(nx.Graph):
             beliefs[n.label] = n.belief()
 
         return beliefs
-
-    def loopy_max_product(self, n_iters: int, order=None):
-        # TODO
-        pass

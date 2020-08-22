@@ -284,6 +284,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
 
+    @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
         uds = self.__class__.uds
         model = self.__class__.model
@@ -295,5 +296,33 @@ class TestEventTypeInductionModel(unittest.TestCase):
         # The factor graph
         fg = self.__class__.test_fg
 
+        # Some query nodes for belief computations
+        test_arg_nodes = list(uds["ewt-train-1"].argument_nodes)
+        query_node_names = [
+            FactorGraph.get_node_name("v", arg, "participant") for arg in test_arg_nodes
+        ]
+        query_nodes = [fg.variable_nodes[name] for name in query_node_names]
+
         # Test loopy sum-product
-        fg.loopy_sum_product(1)
+        beliefs = fg.loopy_sum_product(2, query_nodes)
+
+    def test_loopy_max_product(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+
+        # A test document
+        test_doc_id = self.__class__.test_doc_id
+        test_doc = self.__class__.test_doc
+
+        # The factor graph
+        fg = self.__class__.test_fg
+
+        # Some query nodes for belief computations
+        test_arg_nodes = list(uds["ewt-train-1"].argument_nodes)
+        query_node_names = [
+            FactorGraph.get_node_name("v", arg, "participant") for arg in test_arg_nodes
+        ]
+        query_nodes = [fg.variable_nodes[name] for name in query_node_names]
+
+        # Test loopy sum-product
+        beliefs = fg.loopy_max_product(2, query_nodes)
