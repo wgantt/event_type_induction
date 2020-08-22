@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod, abstractproperty
 from decomp.semantics.uds import UDSSentenceGraph, UDSDocumentGraph
 from enum import Enum
 from event_type_induction.modules.likelihood import Likelihood
+from event_type_induction.constants import NEG_INF
 from overrides import overrides
 from torch import Tensor, logsumexp
 from torch.nn import ParameterDict
@@ -18,6 +19,8 @@ borrow heavily from danbar's Python factor graph library fglib
 TODOs:
     - Ensure tensors are sent to appropriate device
     - Implement loopy max-product
+    - Rename 'source' and 'target' node variables where these
+      distinctions are irrelevant
 """
 
 
@@ -26,6 +29,15 @@ class NodeType(Enum):
 
     VARIABLE = 0
     FACTOR = 1
+
+
+class VariableType(Enum):
+    """Enumeration for variable types."""
+
+    EVENT = 0
+    PARTICIPANT = 1
+    ROLE = 2
+    RELATION = 3
 
 
 class Node(ABC):
@@ -94,13 +106,17 @@ class Node(ABC):
 
 
 class VariableNode(Node):
-    def __init__(self, label: str, ntypes: int, observed: bool = False):
+    def __init__(
+        self, label: str, vtype: VariableType, ntypes: int, observed: bool = False
+    ):
         """Representation of a variable node in the factor graph
 
         Parameters
         ----------
         label
             The name of this variable node
+        vtype
+            The type of variable node this is
         ntypes
             The number of types associated with this variable node
         observed
@@ -108,10 +124,9 @@ class VariableNode(Node):
             really used)
         """
         super().__init__(label)
-        # Not sure whether we'll actually need this
+        # Not sure whether we'll actually need 'observed'
         self.observed = observed
-
-        # The number of types associated with this variable node
+        self.vtype = vtype
         self.ntypes = ntypes
 
         # Initialize the message for this variable node. We
@@ -262,7 +277,7 @@ class LikelihoodFactorNode(FactorNode):
 
 
 class PriorFactorNode(FactorNode):
-    def __init__(self, label: str, prior: Tensor):
+    def __init__(self, label: str, prior: Tensor, vtype: VariableType):
         """Factors for priors on types
 
         Parameters
@@ -273,8 +288,12 @@ class PriorFactorNode(FactorNode):
             A tensor containing the prior for the type of the
             target variable node, indexed by the types of the
             incoming variable nodes
+        vtype
+            The type of variable for which this node represents
+            the prior distribution.
         """
         super().__init__(label, prior)
+        self.vtype = vtype
 
     @overrides
     def sum_product(self, target_node: VariableNode) -> Tensor:
@@ -301,8 +320,6 @@ class PriorFactorNode(FactorNode):
 
             # Get the incoming message
             incoming_msg = edge.get_message(n, self)
-            if incoming_msg is None:
-                print(self.label)
 
             # Reshape appropriately so that it can be
             # added to the outgoing message. May want to
@@ -323,7 +340,9 @@ class PriorFactorNode(FactorNode):
         """
         if len(self.factor.shape) > 1:
             target_dim = self.graph[self][target_node]["object"].factor_dim
-            marginalize_dims = [i for i in range(len(self.factor.shape)) if i != target_dim]
+            marginalize_dims = [
+                i for i in range(len(self.factor.shape)) if i != target_dim
+            ]
             return logsumexp(outgoing_msg, marginalize_dims)
         else:
             return logsumexp(outgoing_msg, 0)
@@ -382,7 +401,17 @@ class Edge:
     def __init__(self, source_node: Node, target_node: Node, factor_dim=0):
         """Base class for edges
 
-        Messages are tracked are separately for each direction (obviously)
+        Messages are stored on the edges, one for each direction
+
+        Parameters
+        ----------
+        source_node
+            The first node incident on this edge
+        target_node
+            The second node incident on this edge
+        factor_dim
+            The dimension of the factor tensor with which the variable
+            is associated
         """
 
         # Array Index
@@ -394,7 +423,10 @@ class Edge:
         elif isinstance(target_node, VariableNode):
             msg_dim = target_node.ntypes
         else:
-            raise ValueError(f"Edge from {source_node.label} to {target_node.label} connects two factor nodes!")
+            raise ValueError(
+                f"Edge from {source_node.label} to {target_node.label} connects two factor nodes!"
+            )
+
         msg_init = torch.zeros(msg_dim)
 
         # Set the message
@@ -416,6 +448,66 @@ class Edge:
     def get_message(self, source_node, target_node) -> None:
         """Return value of message from source node to target node."""
         return self.message[self.index[source_node]][self.index[target_node]]
+
+
+class DimensionMismatchEdge(Edge):
+    """Class for handling dimension mismatch between variables and factors"""
+
+    @overrides
+    def __init__(self, source_node, target_node, factor_dim=0) -> None:
+        self.index = {source_node: 0, target_node: 1}
+        self.factor_dim = factor_dim
+
+        # Determine which variable is source and which target
+        if source_node.type == NodeType.VARIABLE:
+            var_node, factor_node = source_node, target_node
+        else:
+            var_node, factor_node = target_node, source_node
+
+        # Initialize the messages. Owing to the dimension mismatch,
+        # the two messages must have different dimensions.
+        var_to_factor_msg_dim = factor_node.factor.shape[self.factor_dim]
+        var_to_factor_msg_init = torch.ones(var_to_factor_msg_dim) * NEG_INF
+        var_to_factor_msg_init[: var_node.ntypes] = 0
+        factor_to_var_msg_dim = var_node.ntypes
+        factor_to_var_msg_init = torch.zeros(factor_to_var_msg_dim)
+
+        self.message = [[None, None], [None, None]]
+        self.message[self.index[var_node]][
+            self.index[factor_node]
+        ] = var_to_factor_msg_init
+        self.message[self.index[factor_node]][
+            self.index[var_node]
+        ] = factor_to_var_msg_init
+
+    @overrides
+    def set_message(self, source_node, target_node, msg) -> None:
+        new_msg = self._correct_dimension_mismatch(source_node, target_node, msg)
+        super().set_message(source_node, target_node, new_msg)
+
+    def _correct_dimension_mismatch(
+        self, source_node, target_node, msg
+    ) -> torch.Tensor:
+        """Correct dimension mismatch between factors and variables
+
+        This should only ever occur for edges between an event type
+        variable node and a relation type prior node, where the number
+        of relation types is strictly greater than the number of
+        event types.
+        """
+
+        # variable --> factor: expand
+        if source_node.type == NodeType.VARIABLE:
+            var_node, factor_node = source_node, target_node
+            desired_msg_length = factor_node.factor.shape[self.factor_dim]
+            new_msg = torch.ones(desired_msg_length) * NEG_INF
+            new_msg[: len(msg)] = msg
+        # factor --> variable: contract
+        else:
+            var_node, factor_node = target_node, source_node
+            desired_msg_length = var_node.ntypes
+            new_msg = msg[:desired_msg_length]
+        return new_msg
 
 
 class FactorGraph(nx.Graph):
@@ -490,7 +582,21 @@ class FactorGraph(nx.Graph):
                 f"Attempted to create edge between {node1.label} "
                 f"and {node2.label}, but they have the same type ({node1.type}!"
             )
-        self.add_edge(node1, node2, object=Edge(node1, node2, factor_dim))
+
+        edge = Edge(node1, node2, factor_dim)
+        if isinstance(node1, PriorFactorNode):
+            if (
+                node1.vtype == VariableType.RELATION
+                and node2.vtype == VariableType.EVENT
+            ):
+                edge = DimensionMismatchEdge(node1, node2, factor_dim)
+        elif isinstance(node2, PriorFactorNode):
+            if (
+                node2.vtype == VariableType.RELATION
+                and node1.vtype == VariableType.EVENT
+            ):
+                edge = DimensionMismatchEdge(node1, node2, factor_dim)
+        self.add_edge(node1, node2, object=edge)
 
     @property
     def variable_nodes(self):

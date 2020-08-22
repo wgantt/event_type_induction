@@ -1,6 +1,7 @@
 # Package-internal imports
 from event_type_induction.modules.factor_graph import (
     VariableNode,
+    VariableType,
     LikelihoodFactorNode,
     PriorFactorNode,
     FactorGraph,
@@ -198,7 +199,7 @@ class EventTypeInductionModel(FreezableModule):
                 event_v_node_name = FactorGraph.get_node_name("v", pred, "event")
                 if not event_v_node_name in fg.variable_nodes:
                     event_v_node = VariableNode(
-                        event_v_node_name, self.n_event_types
+                        event_v_node_name, VariableType.EVENT, self.n_event_types
                     )
                     fg.set_node(event_v_node)
                 else:
@@ -211,18 +212,20 @@ class EventTypeInductionModel(FreezableModule):
                 )
                 if not participant_v_node_name in fg.variable_nodes:
                     participant_v_node = VariableNode(
-                        participant_v_node_name, self.n_participant_types
+                        participant_v_node_name,
+                        VariableType.PARTICIPANT,
+                        self.n_participant_types,
                     )
                     fg.set_node(participant_v_node)
                 else:
-                    participant_v_node = fg.variable_nodes[
-                        participant_v_node_name
-                    ]
+                    participant_v_node = fg.variable_nodes[participant_v_node_name]
 
                 # Add a variable node for the predicate's role type.
                 # Roles are relational, so we add one for *each* semantics edge.
                 role_v_node = VariableNode(
-                    FactorGraph.get_node_name("v", v1, v2, "role"), self.n_role_types
+                    FactorGraph.get_node_name("v", v1, v2, "role"),
+                    VariableType.ROLE,
+                    self.n_role_types,
                 )
                 fg.set_node(role_v_node)
 
@@ -278,7 +281,9 @@ class EventTypeInductionModel(FreezableModule):
                 event_pf_node_name = FactorGraph.get_node_name("pf", pred, "event")
                 if event_pf_node_name not in fg.factor_nodes:
                     event_pf_node = PriorFactorNode(
-                        FactorGraph.get_node_name("pf", pred, "event"), self.event_probs
+                        FactorGraph.get_node_name("pf", pred, "event"),
+                        self.event_probs,
+                        VariableType.EVENT,
                     )
                     fg.set_node(event_pf_node)
                     fg.set_edge(event_pf_node, event_v_node, 0)
@@ -297,7 +302,9 @@ class EventTypeInductionModel(FreezableModule):
                         ]
                     )
                     participant_type_pf_node = PriorFactorNode(
-                        participant_type_pf_node_name, participant_probs
+                        participant_type_pf_node_name,
+                        participant_probs,
+                        VariableType.PARTICIPANT,
                     )
                     fg.set_node(participant_type_pf_node)
                     fg.set_edge(participant_type_pf_node, participant_v_node, 0)
@@ -310,7 +317,9 @@ class EventTypeInductionModel(FreezableModule):
                 predicate's event type
                 """
                 role_pf_node = PriorFactorNode(
-                    FactorGraph.get_node_name("pf", v1, v2, "role"), self.role_probs
+                    FactorGraph.get_node_name("pf", v1, v2, "role"),
+                    self.role_probs,
+                    VariableType.ROLE,
                 )
                 fg.set_node(role_pf_node)
                 fg.set_edge(role_pf_node, event_v_node, 0)
@@ -326,6 +335,7 @@ class EventTypeInductionModel(FreezableModule):
             # Create a variable node for the edge itself
             relation_v_node = VariableNode(
                 FactorGraph.get_node_name("v", v1, v2, "relation"),
+                VariableType.RELATION,
                 self.n_relation_types,
             )
             fg.set_node(relation_v_node)
@@ -347,7 +357,9 @@ class EventTypeInductionModel(FreezableModule):
             # Create a factor for the prior over the relation type
             # and connect it with the document edge variable node
             relation_pf_node = PriorFactorNode(
-                FactorGraph.get_node_name("pf", v1, v2, "relation"), self.relation_probs
+                FactorGraph.get_node_name("pf", v1, v2, "relation"),
+                self.relation_probs,
+                VariableType.RELATION,
             )
             fg.set_node(relation_pf_node)
             fg.set_edge(relation_v_node, relation_pf_node, 2)

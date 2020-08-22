@@ -60,10 +60,14 @@ class Likelihood(Module, metaclass=ABCMeta):
                     # single annotation)
                     for annotator, value in props[p]["value"].items():
 
-                        # TODO: handle None-valued UDS-EventStructure
+                        # TODO: handle None-valued UDS-EventStructure predicate
                         # annotations. I don't think there are other protocols
                         # liable to have None-valued annotations
                         if value is None:
+                            continue
+                        # TODO: Handle time document edge annotations, which are
+                        # list-valued
+                        elif isinstance(value, list):
                             continue
 
                         # Grab the random intercept for the current annotator
@@ -127,4 +131,4 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        pass
+        return super().forward(mus, annotation)

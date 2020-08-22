@@ -29,7 +29,11 @@ class TestEventTypeInductionModel(unittest.TestCase):
 
         # Construct the model
         cls.model = EventTypeInductionModel(
-            cls.n_event_types, cls.n_role_types, cls.n_relation_types, cls.n_entity_types, cls.uds
+            cls.n_event_types,
+            cls.n_role_types,
+            cls.n_relation_types,
+            cls.n_entity_types,
+            cls.uds,
         )
 
         # Construct a test factor graph
@@ -86,9 +90,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
 
                 # Verify nodes
                 arg_lf_node = FactorGraph.get_node_name("lf", arg)
-                participant_v_node = FactorGraph.get_node_name(
-                    "v", arg, "participant"
-                )
+                participant_v_node = FactorGraph.get_node_name("v", arg, "participant")
                 participant_pf_node = FactorGraph.get_node_name(
                     "pf", arg, "participant"
                 )
@@ -116,9 +118,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     # Verify nodes
                     role_v_node = FactorGraph.get_node_name("v", v1, v2, "role")
                     role_pf_node = FactorGraph.get_node_name("pf", v1, v2, "role")
-                    sem_edge_lf_node = FactorGraph.get_node_name(
-                        "lf", v1, v2
-                    )
+                    sem_edge_lf_node = FactorGraph.get_node_name("lf", v1, v2)
                     assert (
                         role_pf_node in fg.factor_nodes
                     ), f"{arg} has no role prior factor node"
@@ -263,7 +263,9 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     # Special case of mismatched dimension for predicate variable nodes
                     # and relation prior factor nodes
                     if "relation-pf" in node_id and "event" in neighbor.label:
-                        neighbor_msg_dim = neighbor.ntypes + self.__class__.n_entity_types
+                        neighbor_msg_dim = (
+                            neighbor.ntypes + self.__class__.n_entity_types
+                        )
                     else:
                         neighbor_msg_dim = neighbor.ntypes
                     assert (
