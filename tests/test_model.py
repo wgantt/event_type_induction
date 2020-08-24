@@ -8,6 +8,7 @@ from event_type_induction.modules.induction import (
     LikelihoodFactorNode,
     PriorFactorNode,
     VariableNode,
+    VariableType
 )
 from event_type_induction.modules.likelihood import Likelihood
 from event_type_induction.utils import load_event_structure_annotations
@@ -43,6 +44,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
 
     @unittest.skip("Faster iteration on other tests")
     def test_factor_graph_construction(self):
+        """Verify correct graph structure"""
         uds = self.__class__.uds
         model = self.__class__.model
 
@@ -198,6 +200,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
 
     @unittest.skip("Faster iteration on other tests")
     def test_node_and_edge_initialization(self):
+        """Verify factor graph node and edge attributes"""
         uds = self.__class__.uds
         model = self.__class__.model
 
@@ -213,6 +216,9 @@ class TestEventTypeInductionModel(unittest.TestCase):
             assert (
                 node.ntypes is not None
             ), f"Variable node {node_id} was not initialized with a number of types"
+
+            if node.vtype == VariableType.EVENT:
+                print(f"VNode message init: {node.init}")
             assert torch.equal(
                 node.init, torch.zeros(node.ntypes)
             ), f"Incorrect message initialization for variable node {node_id}"
@@ -286,6 +292,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
 
     @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
+        """Verify that loopy sum-product (BP) runs without errors"""
         uds = self.__class__.uds
         model = self.__class__.model
 
@@ -306,7 +313,9 @@ class TestEventTypeInductionModel(unittest.TestCase):
         # Test loopy sum-product
         beliefs = fg.loopy_sum_product(2, query_nodes)
 
+    @unittest.skip("Faster iteration on other tests")
     def test_loopy_max_product(self):
+        """Verify that loopy max-product runs without errors"""
         uds = self.__class__.uds
         model = self.__class__.model
 

@@ -308,7 +308,8 @@ class PriorFactorNode(FactorNode):
         target_node
             The variable node to which the message is to be passed
         """
-        # Initialize the message as the factor's tensor
+        # Initialize the message as the factor's tensor (have to add
+        # tensor of zeros to avoid in-place operations with a leaf variable)
         outgoing_msg = torch.zeros(self.factor.shape) + self.factor
 
         # For each incoming message (from a variable node),
@@ -357,7 +358,7 @@ class PriorFactorNode(FactorNode):
         self.record[target_node] = {}
 
         # Initialize the outgoing message
-        outgoing_msg = self.factor
+        outgoing_msg = torch.zeros(self.factor.shape) + self.factor
 
         # Loop over incoming neighbors is the same as in sum-product
         for n in self.neighbors(target_node):
@@ -373,26 +374,39 @@ class PriorFactorNode(FactorNode):
             # Sum
             outgoing_msg += incoming_msg.view(broadcast_shape)
 
-        # Identify the dimension associated with the target node,
-        # and take the max over all other dimensions
+        """
+        Determine the maximum value for each possible assignment to the
+        target variable. The below is a fancy way to compute this that
+        gets around torch.max's lack of support for max'ing over multiple
+        dimensions simultaneously.
+        """
         target_dim = self.graph[self][target_node]["object"].factor_dim
-
-        # Take the max over the target dimension. (This is a fancy
-        # workaround to do that, given that torch.max does not
-        # support max'ing over multiple dimensions at once
         maxes = outgoing_msg.view(outgoing_msg.size(target_dim), -1).max(dim=-1)
 
-        # Before returning the values, we record the max value for
-        # each incoming variable node, for each possible value of
-        # the target variable node.
-        max_over_shape = {
-            i: dim for i, dim in enumerate(self.factor.shape) if i != target_dim
-        }
-        max_indices = np.unravel_index(maxes.indices, tuple(max_over_shape.values()))
-        max_indices_by_factor_dim = dict(zip(max_over_shape.keys(), max_indices))
-        for n in self.neighbors(target_node):
-            factor_dim = self.graph[n][self].factor_dim
-            self.record[target_node][n] = max_indices_by_factor_dim[factor_dim]
+        # If there *are* incoming variable nodes, we record the best assignment
+        # for each one, for each possible value of the target variable node.
+        if len(self.factor.shape) > 1:
+            # The dimensions of the factor tensor associated with the
+            # incoming variables
+            non_target_dimensions = {
+                i: dim for i, dim in enumerate(self.factor.shape) if i != target_dim
+            }
+
+            # The indices in the message tensor corresponding to the
+            # maximum values
+            max_indices = np.unravel_index(
+                maxes.indices, tuple(non_target_dimensions.values())
+            )
+
+            # Associate each index with the appropriate incoming variable
+            max_indices_by_factor_dim = dict(
+                zip(non_target_dimensions.keys(), max_indices)
+            )
+
+            # Record the best possible assignment for each incoming variable
+            for n in self.neighbors(target_node):
+                factor_dim = self.graph[n][self]["object"].factor_dim
+                self.record[target_node][n] = max_indices_by_factor_dim[factor_dim]
 
         # Return the max values
         return maxes.values
@@ -617,7 +631,7 @@ class FactorGraph(nx.Graph):
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
     ) -> Dict[str, float]:
-        return self.schedule(n_iters, 'sum_product', query_nodes, order)
+        return self.schedule(n_iters, "sum_product", query_nodes, order)
 
     def loopy_max_product(
         self,
@@ -626,7 +640,7 @@ class FactorGraph(nx.Graph):
         order: Optional[List[Node]] = None,
     ) -> Dict[str, int]:
         """Loopy max-product"""
-        return self.schedule(n_iters, 'max_product', query_nodes, order)
+        return self.schedule(n_iters, "max_product", query_nodes, order)
 
     def schedule(
         self,
