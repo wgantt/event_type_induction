@@ -18,6 +18,7 @@ class EventTypeInductionTrainer:
         n_role_types: int,
         n_relation_types: int,
         n_entity_types: int,
+        bp_iters: int,
         device: str = "cpu",
         random_seed=42,
     ):
@@ -25,6 +26,7 @@ class EventTypeInductionTrainer:
         self.n_role_types = n_role_types
         self.n_relation_types = n_relation_types
         self.n_entity_types = n_entity_types
+        self.bp_iters = bp_iters
         self.device = torch.device(device)
         self.random_seed = random_seed
         self.uds = UDSCorpus(annotation_format="raw")
@@ -33,6 +35,7 @@ class EventTypeInductionTrainer:
             n_role_types,
             n_relation_types,
             n_entity_types,
+            bp_iters,
             uds,
             device=device,
         )

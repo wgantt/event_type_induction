@@ -23,8 +23,8 @@ from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict, ModuleDict
 from torch.nn.functional import softmax
-from torch.distributions import Categorical, Normal, Bernoulli
-from typing import Tuple
+from torch.distributions import Categorical, Normal, Bernoulli, MultivariateNormal
+from typing import Dict, Tuple
 
 
 class EventTypeInductionModel(FreezableModule):
@@ -32,6 +32,8 @@ class EventTypeInductionModel(FreezableModule):
 
     TODO
         - Implement forward function
+        - Reduce graph size by filtering out semantics edges that don't
+          have annotations
     """
 
     def __init__(
@@ -40,6 +42,7 @@ class EventTypeInductionModel(FreezableModule):
         n_role_types: int,
         n_relation_types: int,
         n_entity_types: int,
+        bp_iters: int,
         uds: "UDSCorpus",
         device: str = "cpu",
         random_seed: int = 42,
@@ -50,6 +53,9 @@ class EventTypeInductionModel(FreezableModule):
         self.uds = uds
         self.random_seed = random_seed
         self.device = torch.device(device)
+
+        # Number of iterations for which to run message passing
+        self.bp_iters = bp_iters
 
         # Initialize categorical distributions for the different types.
         # We do not place priors on any of these distributions,
@@ -154,6 +160,53 @@ class EventTypeInductionModel(FreezableModule):
         The result is returned as log probabilities
         """
         return Parameter(torch.log(softmax(torch.randn(shape), -1)))
+
+    def compute_annotation_likelihood(
+        self, fg: FactorGraph, beliefs: Dict[str, torch.Tensor]
+    ) -> float:
+        """Compute likelihood of UDS annotations
+
+        Parameters
+        ----------
+        fg
+            The factor graph used to compute the likelihood
+        beliefs
+            A dictionary containing the beliefs (marginals) for each variable
+            node
+        """
+        ll = torch.FloatTensor([0])
+        for lf_node_name, lf_node in fg.likelihood_factor_nodes.items():
+            # Only compute likelihoods over nodes that actually have
+            # annotations
+            if lf_node.per_type_likelihood is not None:
+                # Get the variable node associated with this likelihood.
+                # Each likelihood has exactly one edge, which connects it
+                # to its variable node
+                var_node = list(fg.edges(lf_node))[0][1]
+
+                # Normalize beliefs + likelihood
+                belief = beliefs[var_node.label]
+                likelihood = lf_node.per_type_likelihood
+                belief_norm = torch.log(
+                    torch.exp(belief) / torch.sum(torch.exp(belief))
+                )
+                likelihood_norm = torch.log(
+                    torch.exp(likelihood) / torch.sum(torch.exp(likelihood))
+                )
+                ll += torch.logsumexp(belief_norm + likelihood_norm, 0)
+
+        # TODO: Fix! This is currently always NaN.
+        return ll
+
+    def compute_random_loss(self):
+        """Compute the loss for the prior(s) over annotator random effects"""
+        likelihoods = [
+            self.pred_node_likelihood,
+            self.arg_node_likelihood,
+            self.semantics_edge_likelihood,
+            self.doc_edge_likelihood,
+        ]
+        return torch.sum([ll.compute_random_loss() for ll in likelihoods])
 
     def construct_factor_graph(self, document: UDSDocumentGraph) -> FactorGraph:
         """Construct the factor graph for a document
@@ -397,5 +450,8 @@ class EventTypeInductionModel(FreezableModule):
         return fg
 
     def forward(self, document: decomp.semantics.uds.UDSDocument) -> torch.FloatTensor:
-        # TODO
-        pass
+        fg = self.construct_factor_graph(document)
+        beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
+        fixed_loss = torch.FloatTensor(self.compute_annotation_likelihood(fg, beliefs))
+        random_loss = torch.FloatTensor(self.compute_random_loss())
+        return fixed_loss, random_loss

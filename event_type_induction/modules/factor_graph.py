@@ -19,7 +19,6 @@ borrow heavily from danbar's Python factor graph library fglib
 
 TODOs:
     - Ensure tensors are sent to appropriate device
-    - Implement loopy max-product
     - Rename 'source' and 'target' node variables where these
       distinctions are irrelevant
 """
@@ -125,7 +124,6 @@ class VariableNode(Node):
             really used)
         """
         super().__init__(label)
-        # Not sure whether we'll actually need 'observed'
         self.observed = observed
         self.vtype = vtype
         self.ntypes = ntypes
@@ -139,15 +137,11 @@ class VariableNode(Node):
     def type(self):
         return NodeType.VARIABLE
 
-    def belief(self) -> Tensor:
+    def belief(self, normalize=False) -> Tensor:
         """Return the belief of the variable node
 
-        This method assumes that:
-
-        1. There are no self-loops (this node is not its own neighbor)
-        2. All neighbors are factor nodes
-        3. Messages are stored as log probabilities, and hence
-           are added, not multiplied.
+        As throughout this class, this method assumes that messages
+        are stored as log probabilities.
         """
 
         # Fetch the neighbors
@@ -164,7 +158,7 @@ class VariableNode(Node):
         for n in neighbors:
             belief += self.graph[n][self]["object"].get_message(n, self)
 
-        # TODO: does it matter whether we normalize?
+        # TODO: normalize?
         return belief
 
     @overrides
@@ -244,6 +238,7 @@ class LikelihoodFactorNode(FactorNode):
         super().__init__(label, factor)
         self.mus = mus
         self.annotation = annotation
+        self.per_type_likelihood = None
 
     @overrides
     def sum_product(self, target_node: VariableNode) -> Tensor:
@@ -255,6 +250,7 @@ class LikelihoodFactorNode(FactorNode):
         # the returned likelihoods will be empty. The likelihood in
         # this case is 1, so we return a tensor of log(1) == 0 values.
         if len(likelihoods) == 0:
+            self.per_type_likelihood = None
             return torch.zeros(target_node.ntypes)
 
         # Sum the per-property log likelihoods to obtain overall,
@@ -265,6 +261,7 @@ class LikelihoodFactorNode(FactorNode):
         # Likelihood nodes are leaf factors, so no integration
         # over other variable nodes is necessary here. Return
         # the per-type log likelihood as is.
+        self.per_type_likelihood = per_type_likelihood
         return per_type_likelihood
 
     @overrides
@@ -274,6 +271,7 @@ class LikelihoodFactorNode(FactorNode):
         # is that we track the argmax for each type
         per_type_likelihood = self.sum_product(target_node)
         self.record[target_node] = per_type_likelihood.argmax()
+        self.per_type_likelihood = per_type_likelihood
         return per_type_likelihood
 
 
@@ -441,7 +439,6 @@ class Edge:
             raise ValueError(
                 f"Edge from {source_node.label} to {target_node.label} connects two factor nodes!"
             )
-
         msg_init = torch.zeros(msg_dim)
 
         # Set the message
@@ -533,6 +530,8 @@ class FactorGraph(nx.Graph):
         super().__init__(self, name="Factor Graph")
         self._variable_nodes = {}
         self._factor_nodes = {}
+        self._likelihood_factor_nodes = {}
+        self._prior_factor_nodes = {}
 
     @staticmethod
     def get_node_name(ntype: str, *args: Tuple[str]) -> str:
@@ -565,6 +564,12 @@ class FactorGraph(nx.Graph):
             self.variable_nodes[node.label] = node
         elif node.type == NodeType.FACTOR:
             self.factor_nodes[node.label] = node
+            if isinstance(node, LikelihoodFactorNode):
+                self.likelihood_factor_nodes[node.label] = node
+            elif isinstance(node, PriorFactorNode):
+                self.prior_factor_nodes[node.label] = node
+            else:
+                raise ValueError(f"Invalid factor node type {node.type}!")
         else:
             # TODO: replace with warning when logging is set up
             print(f"Invalid node type {node.type}!")
@@ -625,6 +630,14 @@ class FactorGraph(nx.Graph):
     def factor_nodes(self):
         return self._factor_nodes
 
+    @property
+    def likelihood_factor_nodes(self):
+        return self._likelihood_factor_nodes
+
+    @property
+    def prior_factor_nodes(self):
+        return self._prior_factor_nodes
+
     def loopy_sum_product(
         self,
         n_iters: int,
@@ -659,6 +672,9 @@ class FactorGraph(nx.Graph):
         ----------
         n_iters
             The number of iterations for which to run message passing
+        semiring
+            The type of message passing to use (should be one of
+            "sum_product" or "max_product"
         query_nodes
             The nodes whose beliefs are to be tracked
         order

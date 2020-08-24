@@ -8,7 +8,7 @@ from event_type_induction.modules.induction import (
     LikelihoodFactorNode,
     PriorFactorNode,
     VariableNode,
-    VariableType
+    VariableType,
 )
 from event_type_induction.modules.likelihood import Likelihood
 from event_type_induction.utils import load_event_structure_annotations
@@ -22,6 +22,8 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.n_relation_types = 4
         cls.n_entity_types = 5
 
+        cls.bp_iters = 2
+
         # Load UDS with raw annotations
         uds = UDSCorpus(split="train", annotation_format="raw")
         load_event_structure_annotations(uds)
@@ -34,6 +36,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
             cls.n_role_types,
             cls.n_relation_types,
             cls.n_entity_types,
+            cls.bp_iters,
             cls.uds,
         )
 
@@ -290,7 +293,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
 
-    @unittest.skip("Faster iteration on other tests")
+    # @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
         """Verify that loopy sum-product (BP) runs without errors"""
         uds = self.__class__.uds
@@ -303,15 +306,11 @@ class TestEventTypeInductionModel(unittest.TestCase):
         # The factor graph
         fg = self.__class__.test_fg
 
-        # Some query nodes for belief computations
-        test_arg_nodes = list(uds["ewt-train-1"].argument_nodes)
-        query_node_names = [
-            FactorGraph.get_node_name("v", arg, "participant") for arg in test_arg_nodes
-        ]
-        query_nodes = [fg.variable_nodes[name] for name in query_node_names]
+        # Query nodes for belief (marginal) computations
+        query_nodes = list(fg.variable_nodes.values())
 
         # Test loopy sum-product
-        beliefs = fg.loopy_sum_product(2, query_nodes)
+        fg.loopy_sum_product(model.bp_iters, query_nodes)
 
     @unittest.skip("Faster iteration on other tests")
     def test_loopy_max_product(self):
@@ -334,4 +333,4 @@ class TestEventTypeInductionModel(unittest.TestCase):
         query_nodes = [fg.variable_nodes[name] for name in query_node_names]
 
         # Test loopy sum-product
-        beliefs = fg.loopy_max_product(2, query_nodes)
+        fg.loopy_max_product(model.bp_iters, query_nodes)
