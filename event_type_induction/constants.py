@@ -12,6 +12,9 @@ ORDINAL = 0
 NOMINAL = 1
 BINARY = 2
 
+BINARY_TO_ORDINAL_SHIFT = 4
+
+
 PREDICATE_ANNOTATION_ATTRIBUTES = {
     "time": {"duration": {"type": NOMINAL, "dim": 11}},
     "genericity": {
@@ -93,6 +96,9 @@ SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES = {
 }
 
 DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES = {
-    "mereology": {"containment": {"type": BINARY, "dim": 1}},
+    "mereology": {
+        "containment.p1_contains_p2": {"type": BINARY, "dim": 1},
+        "containment.p2_contains_p1": {"type": BINARY, "dim": 1},
+    },
     "time": {"temporal-relation": {"type": NOMINAL, "dim": 10}},
 }

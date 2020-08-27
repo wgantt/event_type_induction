@@ -91,7 +91,11 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
     data_dir = resource_filename("event_type_induction", "data")
     annotation_paths = glob(os.path.join(data_dir, "*.json"))
     for path in annotation_paths:
-        annotation = RawUDSDataset.from_json(path)
+    	if "mereology" in path:
+    		is_document_level = True
+    	else:
+    		is_document_level = False
+        annotation = RawUDSDataset.from_json(path, is_document_level=is_document_level)
         uds.add_annotation(annotation)
 
 
