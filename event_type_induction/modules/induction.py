@@ -106,16 +106,16 @@ class EventTypeInductionModel(FreezableModule):
         self.relation_probs[:, self.n_entity_types :, -1] = 0
 
         # Initialize mus (expected annotations)
-        self.event_mus = clz._initialize_mus(
+        self.event_mus = clz._initialize_event_params(
             PREDICATE_ANNOTATION_ATTRIBUTES, self.n_event_types
         )
-        self.role_mus = clz._initialize_mus(
+        self.role_mus = clz._initialize_role_params(
             SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES, self.n_role_types
         )
-        self.participant_mus = clz._initialize_mus(
+        self.participant_mus = clz._initialize_participant_params(
             ARGUMENT_ANNOTATION_ATTRIBUTES, self.n_participant_types
         )
-        self.relation_mus = clz._initialize_mus(
+        self.relation_mus, self.relation_covs = clz._initialize_relation_params(
             DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES, self.n_relation_types
         )
 
@@ -139,8 +139,20 @@ class EventTypeInductionModel(FreezableModule):
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(doc_edge_annotators)
 
     @classmethod
-    def _initialize_mus(cls, attribute_dict, n_types) -> ParameterDict:
-        """Initialize mu parameters for every UDS property, for every cluster"""
+    def _initialize_event_params(cls, attribute_dict, n_types) -> ParameterDict:
+        """Initialize mu parameters for predicate node properties, for every cluster"""
+        # TODO
+        pass
+
+    @classmethod
+    def _initialize_role_params(cls, attribute_dict, n_types) -> ParameterDict:
+        """Initialize parameters for semantics edge attributes"""
+        # TODO
+        pass
+
+    @classmethod
+    def _initialize_participant_params(cls, attribute_dict, n_types) -> ParameterDict:
+        """Initialize mu parameters for argument node properties, for every cluster"""
 
         # One mu per event type (cluster)
         mu_dict = {}
@@ -152,6 +164,30 @@ class EventTypeInductionModel(FreezableModule):
                     (n_types, prop_features["dim"])
                 )
         return ParameterDict(mu_dict)
+
+    @classmethod
+    def _initialize_relation_params(
+        cls, attribute_dict, n_types
+    ) -> Tuple[ParameterDict, ParameterList]:
+        """Initialize parameters for document edge attributes"""
+        mu_dict = {}
+
+        # Mereology mus are initialized as normal binary properties are
+        for prop, prop_features in attribute_dict["mereology"].items():
+            prop_name = "-".join(["mereology", prop])
+            mu_dict[prop_name] = cls._initialize_log_prob(
+                (n_types, prop_features["dim"])
+            )
+
+        # Time parameters are conditioned on the type of mereological relation
+        for prop, prop_features in attribute_dict["time"].items():
+            prop_name = "-".join(["time", prop])
+            mu_dict[prop_name] = cls._initialize_log_prob(
+                (n_types, len(MereologyRelation), prop_features["dim"])
+            )
+            cov_list = [Parameter(torch.eye(prop_features["dim"]))]
+
+        return ParameterDict(mu_dict), ParameterList(cov_list)
 
     @staticmethod
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
@@ -206,7 +242,7 @@ class EventTypeInductionModel(FreezableModule):
             self.semantics_edge_likelihood,
             self.doc_edge_likelihood,
         ]
-        return torch.sum([ll.compute_random_loss() for ll in likelihoods])
+        return torch.sum([ll.random_loss() for ll in likelihoods])
 
     def construct_factor_graph(self, document: UDSDocumentGraph) -> FactorGraph:
         """Construct the factor graph for a document
@@ -453,5 +489,5 @@ class EventTypeInductionModel(FreezableModule):
         fg = self.construct_factor_graph(document)
         beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
         fixed_loss = torch.FloatTensor(self.compute_annotation_likelihood(fg, beliefs))
-        random_loss = torch.FloatTensor(self.compute_random_loss())
+        random_loss = torch.FloatTensor(self.random_loss())
         return fixed_loss, random_loss

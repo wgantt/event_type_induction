@@ -1,22 +1,24 @@
+import numpy as np
 import os
+import torch
 
 from collections import defaultdict
 from decomp import UDSCorpus, RawUDSDataset
 from event_type_induction.constants import *
 from glob import glob
 from pkg_resources import resource_filename
-from typing import Any, Dict, Generator, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, Set, Tuple
 
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
     """Fetch all of the annotator IDs from an annotated UDS corpus
 
-	Parameters
-	----------
-	uds
-		The UDSCorpus object from which annotator IDs are to
-		be extracted
-	"""
+    Parameters
+    ----------
+    uds
+        The UDSCorpus object from which annotator IDs are to
+        be extracted
+    """
 
     def helper(items, prop_attrs, annotators_by_domain):
         prop_domains = prop_attrs.keys()
@@ -60,14 +62,14 @@ def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
 def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
     """Get sets of UDS document IDs based on their split
 
-	This is really a utility UDS should provide on its own.
+    This is really a utility UDS should provide on its own.
 
-	Parameters
-	----------
-	uds
-		The UDSCorpus object from which document IDs are
-		to be extracted
-	"""
+    Parameters
+    ----------
+    uds
+        The UDSCorpus object from which document IDs are
+        to be extracted
+    """
     splits = defaultdict(set)
     for doc_id, doc in uds.documents.items():
         sample_sentence = list(doc.sentence_ids)[0]
@@ -79,34 +81,102 @@ def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
 def load_event_structure_annotations(uds: UDSCorpus) -> None:
     """Loads the UDS-EventStructure annotations
 
-	These annotations are not included in v0.1.0 of UDS and
-	must therefore be loaded after the corpus has been initialized
+    These annotations are not included in v0.1.0 of UDS and
+    must therefore be loaded after the corpus has been initialized
 
-	Parameters
-	----------
-	uds
-		The UDSCorpus object into which the annotations will
-		be loaded
-	"""
+    Parameters
+    ----------
+    uds
+        The UDSCorpus object into which the annotations will
+        be loaded
+    """
     data_dir = resource_filename("event_type_induction", "data")
     annotation_paths = glob(os.path.join(data_dir, "*.json"))
     for path in annotation_paths:
-    	if "mereology" in path:
-    		is_document_level = True
-    	else:
-    		is_document_level = False
+        if "mereology" in path:
+            is_document_level = True
+        else:
+            is_document_level = False
         annotation = RawUDSDataset.from_json(path, is_document_level=is_document_level)
         uds.add_annotation(annotation)
+
+
+def ridit_score_confidence(uds: UDSCorpus) -> Dict[str, Dict[int, float]]:
+    """Ridit score confidence values for each annotator
+
+    Parameters
+    ----------
+    uds
+        The UDSCorpus
+    """
+
+    def ridit(x: Iterable) -> Dict[int, float]:
+        """ Apply ridit scoring
+
+        Parameters
+        ----------
+        x
+            The values to be ridit scored
+        """
+        x_vals = set(x)
+        x_flat = np.array(x, dtype=int).flatten()
+        x_shift = x_flat - x_flat.min()  # bincount requires nonnegative ints
+
+        bincounts = np.bincount(x_shift)
+        props = bincounts / bincounts.sum()
+
+        cumdist = np.cumsum(props)
+        cumdist[-1] = 0.0  # this looks odd but is right
+
+        ridit_map = {
+            val: cumdist[i - 1] + p / 2 for val, (i, p) in zip(x_vals, enumerate(props))
+        }
+        return ridit_map
+
+    annotator_confidences = defaultdict(list)
+    for graphid, graph in uds.items():
+        for edge, edge_annotation in graph.semantics_edges().items():
+            for subspace, properties in edge_annotation.items():
+                if isinstance(properties, dict):
+                    for prop in properties.keys():
+                        for annotator, confidence in properties[prop][
+                            "confidence"
+                        ].items():
+                            annotator_confidences[annotator].append(confidence)
+        for sem_node in edge:
+            sem_node_annotation = graph.semantics_nodes[sem_node]
+            for subspace, properties in sem_node_annotation.items():
+                if isinstance(properties, dict):
+                    for prop in properties.keys():
+                        for annotator, confidence in properties[prop][
+                            "confidence"
+                        ].items():
+                            annotator_confidences[annotator].append(confidence)
+
+    for doc in uds.documents.values():
+        for doc_edge_annotation in doc.document_graph.edges.values():
+            for subspace, properties in doc_edge_annotation.items():
+                if isinstance(properties, dict):
+                    for prop in properties.keys():
+                        for annotator, confidence in properties[prop][
+                            "confidence"
+                        ].items():
+                            annotator_confidences[annotator].append(confidence)
+
+    return {
+        annotator: ridit(confidences)
+        for annotator, confidences in annotator_confidences.items()
+    }
 
 
 def parameter_grid(param_dict: Dict[str, Any]):
     """Generator for training hyperparameter grid
 
-	Parameters
-	----------
-	param_dict
-		Dictionary containing the hyperparameters and their possible values
-	"""
+    Parameters
+    ----------
+    param_dict
+        Dictionary containing the hyperparameters and their possible values
+    """
     ks = list(param_dict.keys())
     vlists = []
     for k, v in param_dict.items():
