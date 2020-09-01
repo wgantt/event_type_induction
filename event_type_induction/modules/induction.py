@@ -14,7 +14,7 @@ from event_type_induction.modules.likelihood import (
     DocumentEdgeAnnotationLikelihood,
 )
 from event_type_induction.modules.freezable_module import FreezableModule
-from event_type_induction.utils import load_annotator_ids
+from event_type_induction.utils import load_annotator_ids, ridit_score_confidence
 
 # Package-external imports
 import torch
@@ -128,15 +128,34 @@ class EventTypeInductionModel(FreezableModule):
             doc_edge_annotators,
         ) = load_annotator_ids(uds)
 
+        # Load ridit-scored annotator confidence values
+        ridits = ridit_score_confidence(uds)
+        pred_node_annotator_confidence = {
+            anno: ridits.get(anno) for s in pred_node_annotators.values() for anno in s
+        }
+        arg_node_annotator_confidence = {
+            anno: ridits.get(anno) for s in arg_node_annotators.values() for anno in s
+        }
+        sem_edge_annotator_confidence = {
+            anno: ridits.get(anno) for s in sem_edge_annotators.values() for anno in s
+        }
+        doc_edge_annotator_confidence = {
+            anno: ridits.get(anno) for s in doc_edge_annotators.values() for anno in s
+        }
+
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
-            pred_node_annotators
+            pred_node_annotator_confidence
         )
-        self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(arg_node_annotators)
+        self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
+            arg_node_annotator_confidence
+        )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
-            sem_edge_annotators
+            sem_edge_annotator_confidence
         )
-        self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(doc_edge_annotators)
+        self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
+            doc_edge_annotator_confidence
+        )
 
     @classmethod
     def _initialize_event_params(cls, attribute_dict, n_types) -> ParameterDict:
@@ -183,7 +202,7 @@ class EventTypeInductionModel(FreezableModule):
         for prop, prop_features in attribute_dict["time"].items():
             prop_name = "-".join(["time", prop])
             mu_dict[prop_name] = cls._initialize_log_prob(
-                (n_types, len(MereologyRelation), prop_features["dim"])
+                (n_types, prop_features["dim"])
             )
             cov_list = [Parameter(torch.eye(prop_features["dim"]))]
 

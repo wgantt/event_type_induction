@@ -12,13 +12,18 @@ from typing import Any, Dict, Set, Tuple
 
 
 class Likelihood(Module, metaclass=ABCMeta):
-    def __init__(self, annotator_ids: Set[str], prop_attrs: Dict[str, Dict[str, int]]):
+    def __init__(
+        self, annotator_conf: Dict[str, set], prop_attrs: Dict[str, Dict[str, int]]
+    ):
         """ABC for Event Type Induction Module likelihood computations
 
         Not so sure this should be an ABC any more...
+
+        TODO: replace annotator_ids with annotator confidences.
         """
         super().__init__()
-        self.annotator_ids = annotator_ids
+        self.annotator_ids = set(annotator_conf.keys())
+        self.annotator_conf = annotator_conf
         self.prop_attrs = prop_attrs
         self.prop_domains = prop_attrs.keys()
 
@@ -39,56 +44,11 @@ class Likelihood(Module, metaclass=ABCMeta):
             ModuleDict(random_effects_by_prop),
         )
 
-    def _initialize_ordinal_random_effects() -> Parameter:
-        """Initialize a random effects parameter for ordinal values
-
-        This is used for all binary properties, since we convert them to
-        ordinal values. Ordinal random effects determine the cutpoints.
-        """
-        return Parameter(torch.randn(ORDINAL_RANDOM_EFFECTS_SIZE))
-
-    def _get_ordinal_likelihood(
-        self, binary_value, mu, random, confidence
-    ) -> torch.FloatTensor:
-        """Computes log probability of a given ordinal response
-
-        TODO: verify correctness
-
-        Parameters
-        ----------
-        binary_value
-            The binary value whose log probability is to be returned
-        mu
-            The expected value of the per-property logistic distribution
-        random
-            Per-annotator random effects indicating the distances between
-            cutpoints
-        confidence
-            The confidence score associated with the value
-        """
-
-        # Convert the binary value to an ordinal one (TODO: this is almost
-        # certainly incorrect).
-        ordinal_value = (
-            np.power(-1, binary_value) * confidence
-        ) + BINARY_TO_ORDINAL_SHIFT
-
-        # The distances between cutpoints
-        distances = torch.square(random)
-
-        # The cutpoints, computed as the cumulative sum of the distances
-        cutpoints = torch.cumsum(distances)
-
-        # Probabilities that the ordinal response <= i
-        probs = torch.sigmoid(cutpoints - mu)
-
-        # Compute the probability that the response == i as the difference
-        # between cumulative probabilities
-        probs_high = torch.cat([probs, torch.Tensor([1.0])])
-        probs_low = torch.cat([torch.Tensor([0.0]), probs])
-        return Categorical(probs_high - probs_low).log_prob(
-            torch.FloatTensor([ordinal_value])
-        )
+    def _get_distribution(self, mu, random, prop_type):
+        if prop_type == BINARY:
+            return Bernoulli(torch.sigmoid(mu + random))
+        else:
+            return Categorical(torch.softmax(mu + random, -1))
 
     def random_loss(self):
         """Computes log likelihood of annotator random effects
@@ -118,6 +78,7 @@ class Likelihood(Module, metaclass=ABCMeta):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
+        # TODO: incorporate confidence
         likelihoods = {}
         for domain, props in annotation.items():
             if domain in self.prop_domains:
@@ -135,23 +96,19 @@ class Likelihood(Module, metaclass=ABCMeta):
                     # single annotation)
                     for annotator, value in props[p]["value"].items():
 
+                        # Ignores none-valued EventStructure annotations and
+                        # list-valued Time annotations, handled by override
+                        if value is None or isinstance(value, list):
+                            continue
+
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[annotator][prop_name]
 
-                        # Compute log likelihood; binary properties are
-                        # converted to ordinal values based on confidence
-                        # scores
-                        if prop_type == BINARY:
-                            confidence = props[p]["confidence"][annotator]
-                            likelihood = self._get_ordinal_likelihood(
-                                value, mu, random, confidence
-                            )
-                        elif prop_type == NOMINAL:
-                            likelihood = self._get_nominal_likelihood(
-                                value, mu, random, confidence
-                            )
-                        else:
-                            likelihood = 0
+                        # Get the appropriate distribution
+                        dist = self._get_distribution(mu, random, prop_type)
+
+                        # Compute log likelihood
+                        likelihood = dist.log_prob(torch.Tensor([value]))
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
@@ -163,8 +120,8 @@ class Likelihood(Module, metaclass=ABCMeta):
 
 class PredicateNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Set[str]):
-        super().__init__(annotator_ids, PREDICATE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_conf: Dict[str, set]):
+        super().__init__(annotator_conf, PREDICATE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
@@ -175,15 +132,12 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
 
 class ArgumentNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Set[str]):
-        super().__init__(annotator_ids, ARGUMENT_ANNOTATION_ATTRIBUTES)
-        # No fancy things we need to do for argument annotation attributes,
-        # as all properties are binary and none are contingent. Thus, we
-        # can invoke default random effects method directly
+    def __init__(self, annotator_conf: Dict[str, set]):
+        super().__init__(annotator_conf, ARGUMENT_ANNOTATION_ATTRIBUTES)
         (
             self.random_effects,
             self.random_effects_by_prop,
-        ) = self._initialize_random_effects(annotator_ids)
+        ) = self._initialize_random_effects(self.annotator_ids)
 
     @overrides
     def forward(
@@ -195,8 +149,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
 
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Set[str]):
-        super().__init__(annotator_ids, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_conf: Dict[str, set]):
+        super().__init__(annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
@@ -207,14 +161,13 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Set[str]):
-        super().__init__(annotator_ids, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_conf: Dict[str, set]):
+        super().__init__(annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
         self, mus: ParameterDict, cov: ParameterList, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        mer_relation_type = MereologyRelation.UNRELATED
         # if "mereology" in annotation:
         #     p1_contains_p2 = annotation["mereology"]["containment.p1_contains_p2"]
         #     p2_contains_p1 = annotation["mereology"]["containment.p2_contains_p1"]
@@ -223,6 +176,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         #     # TODO: compute mereology likelihood
         # if "time" in annotation:
         #     pass
+        pass
 
     @overrides
     def _initialize_random_effects(self, annotator_ids: Set[str]):

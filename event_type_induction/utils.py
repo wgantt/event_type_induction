@@ -101,13 +101,20 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
         uds.add_annotation(annotation)
 
 
-def ridit_score_confidence(uds: UDSCorpus) -> Dict[str, Dict[int, float]]:
+def ridit_score_confidence(
+    uds: UDSCorpus, split="train"
+) -> Dict[str, Dict[int, float]]:
     """Ridit score confidence values for each annotator
+
+    TODO: generate ridit scores for all possible confidence values
+          ensure correctness
 
     Parameters
     ----------
     uds
         The UDSCorpus
+    split
+        The split of the UDSCorpus to perform the ridit scoring over
     """
 
     def ridit(x: Iterable) -> Dict[int, float]:
@@ -133,8 +140,30 @@ def ridit_score_confidence(uds: UDSCorpus) -> Dict[str, Dict[int, float]]:
         }
         return ridit_map
 
+    # def get_ridit_map(ridit_map: Dict[int, float]) -> Dict[int, float]:
+    #     prev_val = 0.
+    #     max_conf = max(ridit_map)
+    #     for i in range(N_CONFIDENCE_SCORES):
+    #         if i > max_conf:
+    #             pass
+
+    # Determine sentence- and document-level graphs for the split
+    # (There should really be a UDS function to do this)
+    if split is None:
+        # If no split, use the whole corpus
+        split_sentence_graphs = uds.graphs
+        split_doc_grapns = uds.documents
+    else:
+        split_sentence_graphs = {}
+        split_doc_graphs = {}
+        for name, graph in uds.graphs.items():
+            if split in name:
+                split_sentence_graphs[name] = graph
+                split_doc_graphs[graph.document_id] = uds.documents[graph.document_id]
+
+    # Semantics node and edge properties
     annotator_confidences = defaultdict(list)
-    for graphid, graph in uds.items():
+    for graphid, graph in split_sentence_graphs.items():
         for edge, edge_annotation in graph.semantics_edges().items():
             for subspace, properties in edge_annotation.items():
                 if isinstance(properties, dict):
@@ -153,7 +182,8 @@ def ridit_score_confidence(uds: UDSCorpus) -> Dict[str, Dict[int, float]]:
                         ].items():
                             annotator_confidences[annotator].append(confidence)
 
-    for doc in uds.documents.values():
+    # Document edge properties
+    for doc in split_doc_graphs.values():
         for doc_edge_annotation in doc.document_graph.edges.values():
             for subspace, properties in doc_edge_annotation.items():
                 if isinstance(properties, dict):

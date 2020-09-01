@@ -14,94 +14,63 @@ ORDINAL = 0
 NOMINAL = 1
 BINARY = 2
 
-BINARY_TO_ORDINAL_SHIFT = 4
-
-ORDINAL_RANDOM_EFFECTS_SIZE = 8
+BINARY_PROP_SIZE = 1
+N_CONFIDENCE_SCORES = 5
 
 
 PREDICATE_ANNOTATION_ATTRIBUTES = {
     "time": {"duration": {"type": NOMINAL, "dim": 11}},
     "genericity": {
-        "pred-dynamic": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "pred-hypothetical": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "pred-particular": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
+        "pred-dynamic": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "pred-hypothetical": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "pred-particular": {"type": BINARY, "dim": BINARY_PROP_SIZE},
     },
-    "factuality": {"factual": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE}},
+    "factuality": {"factual": {"type": BINARY, "dim": BINARY_PROP_SIZE}},
     "event_structure": {
-        "natural_parts": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "telic": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
+        "natural_parts": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "telic": {"type": BINARY, "dim": BINARY_PROP_SIZE},
         "situation_duration_lbound": {"type": NOMINAL, "dim": 12},
         "situation_duration_ubound": {"type": NOMINAL, "dim": 12},
         "avg_part_duration_lbound": {"type": NOMINAL, "dim": 12},
         "avg_part_duration_ubound": {"type": NOMINAL, "dim": 12},
-        "part_similarity": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "dynamic": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
+        "part_similarity": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "dynamic": {"type": BINARY, "dim": BINARY_PROP_SIZE},
     },
 }
 
 ARGUMENT_ANNOTATION_ATTRIBUTES = {
     "genericity": {
-        "arg-abstract": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "arg-kind": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "arg-particular": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
+        "arg-abstract": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "arg-kind": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "arg-particular": {"type": BINARY, "dim": BINARY_PROP_SIZE},
     },
     "wordsense": {
-        "supersense-noun.shape": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.process": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.relation": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.communication": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.time": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.plant": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.phenomenon": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.animal": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.state": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.substance": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.person": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.possession": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.Tops": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.object": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.event": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.artifact": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.act": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.body": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.attribute": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.quantity": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.motive": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.location": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.cognition": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "supersense-noun.group": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.food": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
-        "supersense-noun.feeling": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE},
+        "supersense-noun.shape": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.process": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.relation": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.communication": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.time": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.plant": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.phenomenon": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.animal": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.state": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.substance": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.person": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.possession": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.Tops": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.object": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.event": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.artifact": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.act": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.body": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.attribute": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.quantity": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.motive": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.location": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.cognition": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.group": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.food": {"type": BINARY, "dim": BINARY_PROP_SIZE},
+        "supersense-noun.feeling": {"type": BINARY, "dim": BINARY_PROP_SIZE},
     },
 }
 
@@ -126,36 +95,13 @@ SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES = {
         "volition": {"type": NOMINAL, "dim": 6},
         "change_of_state": {"type": NOMINAL, "dim": 6},
     },
-    "distributivity": {
-        "distributive": {"type": BINARY, "dim": ORDINAL_RANDOM_EFFECTS_SIZE}
-    },
+    "distributivity": {"distributive": {"type": BINARY, "dim": BINARY_PROP_SIZE}},
 }
 
 DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES = {
     "mereology": {
-        "containment.p1_contains_p2": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
-        "containment.p2_contains_p1": {
-            "type": BINARY,
-            "dim": ORDINAL_RANDOM_EFFECTS_SIZE,
-        },
+        "containment.p1_contains_p2": {"type": BINARY, "dim": BINARY_PROP_SIZE,},
+        "containment.p2_contains_p1": {"type": BINARY, "dim": BINARY_PROP_SIZE,},
     },
     "time": {"temporal-relation": {"type": NOMINAL, "dim": 4}},
-}
-
-
-class MereologyRelation(Enum):
-    UNRELATED = 0
-    P1_CONTAINS_P2 = 1
-    P2_CONTAINS_P1 = 2
-    EQUIVALENT = 3
-
-
-MEREOLOGY_RELATION = {
-    (0, 0): MereologyRelation.UNRELATED,
-    (1, 0): MereologyRelation.P1_CONTAINS_P2,
-    (0, 1): MereologyRelation.P2_CONTAINS_P1,
-    (1, 1): MereologyRelation.EQUIVALENT,
 }
