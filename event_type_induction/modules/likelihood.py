@@ -8,12 +8,12 @@ from overrides import overrides
 from torch import Tensor, randn
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict, ParameterList
-from typing import Any, Dict, Set, Tuple
+from typing import Any, Dict, Tuple
 
 
 class Likelihood(Module, metaclass=ABCMeta):
     def __init__(
-        self, annotator_conf: Dict[str, set], prop_attrs: Dict[str, Dict[str, int]]
+        self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set], prop_attrs: Dict[str, Dict[str, int]]
     ):
         """ABC for Event Type Induction Module likelihood computations
 
@@ -22,7 +22,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         TODO: replace annotator_ids with annotator confidences.
         """
         super().__init__()
-        self.annotator_ids = set(annotator_conf.keys())
+        self.annotator_ids = annotator_ids
         self.annotator_conf = annotator_conf
         self.prop_attrs = prop_attrs
         self.prop_domains = prop_attrs.keys()
@@ -120,8 +120,8 @@ class Likelihood(Module, metaclass=ABCMeta):
 
 class PredicateNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_conf: Dict[str, set]):
-        super().__init__(annotator_conf, PREDICATE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
+        super().__init__(annotator_ids, annotator_conf, PREDICATE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
@@ -132,8 +132,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
 
 class ArgumentNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_conf: Dict[str, set]):
-        super().__init__(annotator_conf, ARGUMENT_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
+        super().__init__(annotator_ids, annotator_conf, ARGUMENT_ANNOTATION_ATTRIBUTES)
         (
             self.random_effects,
             self.random_effects_by_prop,
@@ -149,8 +149,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
 
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_conf: Dict[str, set]):
-        super().__init__(annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
+        super().__init__(annotator_ids, annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
@@ -161,25 +161,17 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_conf: Dict[str, set]):
-        super().__init__(annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
+    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
+        super().__init__(annotator_ids, annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
 
     @overrides
     def forward(
         self, mus: ParameterDict, cov: ParameterList, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        # if "mereology" in annotation:
-        #     p1_contains_p2 = annotation["mereology"]["containment.p1_contains_p2"]
-        #     p2_contains_p1 = annotation["mereology"]["containment.p2_contains_p1"]
-        #     mer_relation_type = MEREOLOGY_RELATION[p1_contains_p2][p2_contains_p1]
-
-        #     # TODO: compute mereology likelihood
-        # if "time" in annotation:
-        #     pass
         pass
 
     @overrides
-    def _initialize_random_effects(self, annotator_ids: Set[str]):
+    def _initialize_random_effects(self, annotator_ids: Dict[str, str]):
         random_effects_by_annotator = defaultdict(ParameterDict)
         random_effects_by_prop = defaultdict(ParameterDict)
         for domain in self.prop_domains:

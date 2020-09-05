@@ -45,7 +45,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.test_doc = cls.uds.documents[cls.test_doc_id]
         cls.test_fg = cls.model.construct_factor_graph(cls.test_doc)
 
-    @unittest.skip("Faster iteration on other tests")
+    # @unittest.skip("Faster iteration on other tests")
     def test_factor_graph_construction(self):
         """Verify correct graph structure"""
         uds = self.__class__.uds
@@ -201,7 +201,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     var_node, relation_pf_node
                 ), f"{(v1, v2)} has no edge between {var_node} and the prior factor node"
 
-    @unittest.skip("Faster iteration on other tests")
+    # @unittest.skip("Faster iteration on other tests")
     def test_node_and_edge_initialization(self):
         """Verify factor graph node and edge attributes"""
         uds = self.__class__.uds
@@ -220,8 +220,6 @@ class TestEventTypeInductionModel(unittest.TestCase):
                 node.ntypes is not None
             ), f"Variable node {node_id} was not initialized with a number of types"
 
-            if node.vtype == VariableType.EVENT:
-                print(f"VNode message init: {node.init}")
             assert torch.equal(
                 node.init, torch.zeros(node.ntypes)
             ), f"Incorrect message initialization for variable node {node_id}"
@@ -293,7 +291,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
 
-    # @unittest.skip("Faster iteration on other tests")
+    @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
         """Verify that loopy sum-product (BP) runs without errors"""
         uds = self.__class__.uds

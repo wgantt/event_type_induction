@@ -97,8 +97,8 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
             is_document_level = True
         else:
             is_document_level = False
-        annotation = RawUDSDataset.from_json(path, is_document_level=is_document_level)
-        uds.add_annotation(annotation)
+        annotation = RawUDSDataset.from_json(path)
+        uds.add_annotation(annotation, is_document_level=is_document_level)
 
 
 def ridit_score_confidence(
@@ -171,16 +171,21 @@ def ridit_score_confidence(
                         for annotator, confidence in properties[prop][
                             "confidence"
                         ].items():
-                            annotator_confidences[annotator].append(confidence)
+                            if confidence is not None:
+                                annotator_confidences[annotator].append(confidence)
         for sem_node in edge:
             sem_node_annotation = graph.semantics_nodes[sem_node]
             for subspace, properties in sem_node_annotation.items():
+                # Special case: wordsense has no confidence scores
+                if subspace == "wordsense":
+                    continue
                 if isinstance(properties, dict):
                     for prop in properties.keys():
                         for annotator, confidence in properties[prop][
                             "confidence"
                         ].items():
-                            annotator_confidences[annotator].append(confidence)
+                            if confidence is not None:
+                                annotator_confidences[annotator].append(confidence)
 
     # Document edge properties
     for doc in split_doc_graphs.values():
@@ -191,7 +196,17 @@ def ridit_score_confidence(
                         for annotator, confidence in properties[prop][
                             "confidence"
                         ].items():
-                            annotator_confidences[annotator].append(confidence)
+                            if confidence is not None:
+                                annotator_confidences[annotator].append(confidence)
+
+    for annotator, confidences in annotator_confidences.items():
+        try:
+            ridit(confidences)
+        except TypeError as te:
+            print(f"error: {te}")
+            print(f"annotator: {annotator}")
+            print(f"confidences: {confidences}")
+            return
 
     return {
         annotator: ridit(confidences)

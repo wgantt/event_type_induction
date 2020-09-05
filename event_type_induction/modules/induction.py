@@ -21,7 +21,7 @@ import torch
 import decomp
 from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
-from torch.nn import Parameter, ParameterDict, ModuleDict
+from torch.nn import Parameter, ParameterDict, ParameterList, ModuleDict
 from torch.nn.functional import softmax
 from torch.distributions import Categorical, Normal, Bernoulli, MultivariateNormal
 from typing import Dict, Tuple
@@ -145,15 +145,19 @@ class EventTypeInductionModel(FreezableModule):
 
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
+            pred_node_annotators,
             pred_node_annotator_confidence
         )
         self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
+            arg_node_annotators,
             arg_node_annotator_confidence
         )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
+            sem_edge_annotators,
             sem_edge_annotator_confidence
         )
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
+            doc_edge_annotators,
             doc_edge_annotator_confidence
         )
 
@@ -193,14 +197,14 @@ class EventTypeInductionModel(FreezableModule):
 
         # Mereology mus are initialized as normal binary properties are
         for prop, prop_features in attribute_dict["mereology"].items():
-            prop_name = "-".join(["mereology", prop])
+            prop_name = "-".join(["mereology", prop]).replace(".", "-")
             mu_dict[prop_name] = cls._initialize_log_prob(
                 (n_types, prop_features["dim"])
             )
 
         # Time parameters are conditioned on the type of mereological relation
         for prop, prop_features in attribute_dict["time"].items():
-            prop_name = "-".join(["time", prop])
+            prop_name = "-".join(["time", prop]).replace(".", "-")
             mu_dict[prop_name] = cls._initialize_log_prob(
                 (n_types, prop_features["dim"])
             )
@@ -212,7 +216,7 @@ class EventTypeInductionModel(FreezableModule):
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
         """Unit random normal-based initialization for model parameters
 
-        The result is returned as log probabilities
+        The result is returned as log probabilitiess
         """
         return Parameter(torch.log(softmax(torch.randn(shape), -1)))
 
