@@ -13,7 +13,10 @@ from typing import Any, Dict, Tuple
 
 class Likelihood(Module, metaclass=ABCMeta):
     def __init__(
-        self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set], prop_attrs: Dict[str, Dict[str, int]]
+        self,
+        annotator_ids: Dict[str, str],
+        annotator_conf: Dict[str, set],
+        prop_attrs: Dict[str, Dict[str, int]],
     ):
         """ABC for Event Type Induction Module likelihood computations
 
@@ -150,7 +153,9 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
     @overrides
     def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(annotator_ids, annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES)
+        super().__init__(
+            annotator_ids, annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES
+        )
 
     @overrides
     def forward(
@@ -162,7 +167,9 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 class DocumentEdgeAnnotationLikelihood(Likelihood):
     @overrides
     def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(annotator_ids, annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES)
+        super().__init__(
+            annotator_ids, annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES
+        )
 
     @overrides
     def forward(

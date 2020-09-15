@@ -45,7 +45,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.test_doc = cls.uds.documents[cls.test_doc_id]
         cls.test_fg = cls.model.construct_factor_graph(cls.test_doc)
 
-    # @unittest.skip("Faster iteration on other tests")
+    @unittest.skip("Faster iteration on other tests")
     def test_factor_graph_construction(self):
         """Verify correct graph structure"""
         uds = self.__class__.uds
@@ -291,7 +291,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
 
-    @unittest.skip("Faster iteration on other tests")
+    # @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
         """Verify that loopy sum-product (BP) runs without errors"""
         uds = self.__class__.uds
@@ -310,7 +310,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
         # Test loopy sum-product
         fg.loopy_sum_product(model.bp_iters, query_nodes)
 
-    @unittest.skip("Faster iteration on other tests")
+    # @unittest.skip("Faster iteration on other tests")
     def test_loopy_max_product(self):
         """Verify that loopy max-product runs without errors"""
         uds = self.__class__.uds

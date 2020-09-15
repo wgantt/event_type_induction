@@ -145,20 +145,16 @@ class EventTypeInductionModel(FreezableModule):
 
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
-            pred_node_annotators,
-            pred_node_annotator_confidence
+            pred_node_annotators, pred_node_annotator_confidence
         )
         self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
-            arg_node_annotators,
-            arg_node_annotator_confidence
+            arg_node_annotators, arg_node_annotator_confidence
         )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
-            sem_edge_annotators,
-            sem_edge_annotator_confidence
+            sem_edge_annotators, sem_edge_annotator_confidence
         )
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
-            doc_edge_annotators,
-            doc_edge_annotator_confidence
+            doc_edge_annotators, doc_edge_annotator_confidence
         )
 
     @classmethod
