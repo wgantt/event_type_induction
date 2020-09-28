@@ -175,6 +175,7 @@ class VariableNode(Node):
             for n in self.neighbors(target_node):
                 msg += self.graph[n][self]["object"].get_message(n, self)
 
+        print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}")
         return msg
 
     @overrides
@@ -343,8 +344,10 @@ class PriorFactorNode(FactorNode):
             marginalize_dims = [
                 i for i in range(len(self.factor.shape)) if i != target_dim
             ]
+            print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(logsumexp(outgoing_msg, marginalize_dims))}")
             return logsumexp(outgoing_msg, marginalize_dims)
         else:
+            print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(logsumexp(outgoing_msg, 0))}")
             return logsumexp(outgoing_msg, 0)
 
     @overrides
