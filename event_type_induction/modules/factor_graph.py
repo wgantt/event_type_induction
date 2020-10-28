@@ -21,7 +21,17 @@ TODOs:
     - Ensure tensors are sent to appropriate device
     - Rename 'source' and 'target' node variables where these
       distinctions are irrelevant
+    - Refactor factor graph components into separate module
 """
+
+
+def normalize_message(msg: Tensor):
+    """Normalizes a message of log values using the exp-normalize trick:
+       https://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
+    """
+    b = msg.max()
+    y = torch.exp(msg - b)
+    return torch.log(y / y.sum())
 
 
 class NodeType(Enum):
@@ -174,8 +184,10 @@ class VariableNode(Node):
             # iterator over all neighbors *except* target_node
             for n in self.neighbors(target_node):
                 msg += self.graph[n][self]["object"].get_message(n, self)
-
-        print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}")
+        msg = normalize_message(msg)
+        print(
+            f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}"
+        )
         return msg
 
     @overrides
@@ -344,11 +356,15 @@ class PriorFactorNode(FactorNode):
             marginalize_dims = [
                 i for i in range(len(self.factor.shape)) if i != target_dim
             ]
-            print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(logsumexp(outgoing_msg, marginalize_dims))}")
-            return logsumexp(outgoing_msg, marginalize_dims)
+            msg = logsumexp(outgoing_msg, marginalize_dims)
         else:
-            print(f"outgoing message from {self.label} to {target_node.label}: {torch.exp(logsumexp(outgoing_msg, 0))}")
-            return logsumexp(outgoing_msg, 0)
+            msg = logsumexp(outgoing_msg, 0)
+
+        msg = normalize_message(msg)
+        print(
+            f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}"
+        )
+        return msg
 
     @overrides
     def max_product(self, target_node: VariableNode) -> Tensor:
@@ -646,17 +662,19 @@ class FactorGraph(nx.Graph):
         n_iters: int,
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
+        exclusions: Optional[Dict[Node, Optional[Node]]] = {},
     ) -> Dict[str, float]:
-        return self.schedule(n_iters, "sum_product", query_nodes, order)
+        return self.schedule(n_iters, "sum_product", query_nodes, order, exclusions)
 
     def loopy_max_product(
         self,
         n_iters: int,
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
+        exclusions: Optional[Dict[Node, Optional[Node]]] = {},
     ) -> Dict[str, int]:
         """Loopy max-product"""
-        return self.schedule(n_iters, "max_product", query_nodes, order)
+        return self.schedule(n_iters, "max_product", query_nodes, order, exclusions)
 
     def schedule(
         self,
@@ -664,6 +682,7 @@ class FactorGraph(nx.Graph):
         semiring: str,
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
+        exclusions: Optional[Dict[Node, Optional[Node]]] = {},
     ) -> Dict[str, Any]:
         """Runs message passing on graphs with cycles
 
@@ -683,6 +702,9 @@ class FactorGraph(nx.Graph):
         order
             The order in which to visit nodes in the graph. For loopy BP,
             any order is technically permissible
+        exclusions
+            For each node in the order, specifies the edges the exclude
+            when performing message updates. Useful for forward-backward.
         """
 
         # Default order
@@ -691,13 +713,16 @@ class FactorGraph(nx.Graph):
                 self._variable_nodes.values()
             )
 
+        if not exclusions:
+            exclusions = {node: None for node in order}
+
         # Track the beliefs of each query node
         beliefs = {n.label: 0 for n in query_nodes}
 
         # Do message passing for the specified number of iterations
-        for _ in range(n_iters):
+        for i in range(n_iters):
             for node in order:
-                for neighbor in node.neighbors():
+                for neighbor in node.neighbors(exclusions[node]):
                     msg = getattr(node, semiring)(neighbor)
                     self[node][neighbor]["object"].set_message(node, neighbor, msg)
 
