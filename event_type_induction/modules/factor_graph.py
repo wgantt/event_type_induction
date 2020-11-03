@@ -175,7 +175,7 @@ class VariableNode(Node):
     def sum_product(self, target_node: "FactorNode") -> Tensor:
         """Sum-product (belief-propagation) message passing"""
 
-        msg = self.init
+        msg = torch.zeros(self.ntypes)
 
         # Unless this node is observed, we have to multiply
         # in (= add the log of) all incoming messages
@@ -184,11 +184,7 @@ class VariableNode(Node):
             # iterator over all neighbors *except* target_node
             for n in self.neighbors(target_node):
                 msg += self.graph[n][self]["object"].get_message(n, self)
-        msg = normalize_message(msg)
-        print(
-            f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}"
-        )
-        return msg
+        return normalize_message(msg)
 
     @overrides
     def max_product(self, target_node: "FactorNode"):
@@ -360,11 +356,7 @@ class PriorFactorNode(FactorNode):
         else:
             msg = logsumexp(outgoing_msg, 0)
 
-        msg = normalize_message(msg)
-        print(
-            f"outgoing message from {self.label} to {target_node.label}: {torch.exp(msg)}"
-        )
-        return msg
+        return normalize_message(msg)
 
     @overrides
     def max_product(self, target_node: VariableNode) -> Tensor:
