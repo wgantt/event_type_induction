@@ -76,7 +76,6 @@ class TestFactorGraph(unittest.TestCase):
 
         return fg, v1, v2, v3, v4, pf1, pf2, pf3
 
-    @unittest.skip("blah")
     def test_sum_product_one_variable_node(self):
 
         fg, v1, pf1 = self.one_variable_setup()
@@ -111,7 +110,6 @@ class TestFactorGraph(unittest.TestCase):
         assert len(beliefs) == 1
         assert beliefs["v1"] == normalize_message(torch.logsumexp(pf1.factor, 0))
 
-    @unittest.skip("blah")
     def test_sum_product_two_variable_nodes(self):
         fg, v1, v2, pf1 = self.two_variable_setup()
 
@@ -136,40 +134,27 @@ class TestFactorGraph(unittest.TestCase):
     def test_sum_product_four_variable_nodes(self):
         fg, v1, v2, v3, v4, pf1, pf2, pf3 = self.four_variable_setup()
 
-        # Mimic non-loopy belief propagation by forcing a
-        # forward/backward schedule
         query_nodes = v1, v2, v3, v4
         forward_schedule = [v1, pf1, v2, pf2, v3, pf3, v4]
-        forward_exclusions = {
-            v1: None,
-            pf1: v1,
-            v2: pf1,
-            pf2: v2,
-            v3: pf2,
-            pf3: v3,
-            v4: pf3,
-        }
-        backward_schedule = list(reversed(forward_schedule))
-        backward_exclusions = {
-            v4: None,
-            pf3: v4,
-            v3: pf3,
-            pf2: v3,
-            v2: pf2,
-            pf1: v2,
-            v1: pf1,
-        }
 
-        beliefs = fg.loopy_sum_product(
-            1, query_nodes, forward_schedule, forward_exclusions
-        )
-        beliefs = fg.loopy_sum_product(
-            1, query_nodes, backward_schedule, backward_exclusions
-        )
+        # Even though this is a linear chain, we still run "loopy" BP
+        # just to test convergence.
+        beliefs = fg.loopy_sum_product(20, query_nodes, forward_schedule)
+
         assert len(beliefs) == 4
-        print(
-            [
-                torch.exp(beliefs[v]) / torch.sum(torch.exp(beliefs[v]))
-                for v in ["v1", "v2", "v3", "v4"]
-            ]
-        )
+        actual_beliefs = [
+            torch.exp(beliefs[v]) / torch.sum(torch.exp(beliefs[v]))
+            for v in ["v1", "v2", "v3", "v4"]
+        ]
+
+        # These are the marginals output in the terminal after 20 iterations
+        # of loopy BP using the schedule specified above, and are very close
+        # to the exact marginals.
+        expected_beliefs = [
+            torch.FloatTensor([0.6489, 0.3511]),
+            torch.FloatTensor([0.7021, 0.2979]),
+            torch.FloatTensor([0.7447, 0.2553]),
+            torch.FloatTensor([0.5745, 0.4255]),
+        ]
+        for a, e in zip(actual_beliefs, expected_beliefs):
+            assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"

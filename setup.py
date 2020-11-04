@@ -11,7 +11,7 @@ setup(
     package_dir={"event_type_induction": "event_type_induction"},
     install_requires=[
         "decomp==2.0.0a1",
-        "glob==0.2.*",
+        "decorator==4.4.*",
         "networkx==2.5.*",
         "numpy==1.17.*",
         "overrides==3.1.*",
