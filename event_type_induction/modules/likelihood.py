@@ -8,50 +8,68 @@ from overrides import overrides
 from torch import Tensor, randn
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict, ParameterList
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Set, Tuple
 
 
 class Likelihood(Module, metaclass=ABCMeta):
     def __init__(
         self,
-        annotator_ids: Dict[str, str],
-        annotator_conf: Dict[str, set],
-        prop_attrs: Dict[str, Dict[str, int]],
+        property_subspaces: Set[str],
+        annotator_confidences: Dict[str, Dict[int, float]],
+        metadata: "UDSAnnotationMetadata",
     ):
-        """ABC for Event Type Induction Module likelihood computations
-
-        Not so sure this should be an ABC any more...
-
-        TODO: replace annotator_ids with annotator confidences.
-        """
+        """ABC for Event Type Induction Module likelihood computations"""
         super().__init__()
-        self.annotator_ids = annotator_ids
-        self.annotator_conf = annotator_conf
-        self.prop_attrs = prop_attrs
-        self.prop_domains = prop_attrs.keys()
+        self.property_subspaces = property_subspaces
+        self.annotator_confidences = annotator_confidences
+        self.metadata = metadata
 
-    def _initialize_random_effects(self, annotator_ids: Dict[str, str]) -> ModuleDict:
-        random_effects_by_annotator = defaultdict(ParameterDict)
-        random_effects_by_prop = defaultdict(ParameterDict)
-        for domain in self.prop_domains:
-            for annotator in annotator_ids[domain]:
-                for p in self.prop_attrs[domain].keys():
-                    prop_name = "-".join([domain, p]).replace(".", "-")
-                    prop_dim = self.prop_attrs[domain][p]["dim"]
+    def _initialize_random_effects(self) -> ModuleDict:
+        random_effects = defaultdict(ParameterDict)
+        for subspace in self.property_subspaces:
+            for annotator in self.metadata.annotators(subspace):
+                for p in self.metadata.properties(subspace):
+
+                    # Determine property dimension
+                    prop_dim = self._get_prop_dim(subspace, p)
+
+                    # Single random intercept term per annotator per property
                     random_shift = Parameter(torch.randn(prop_dim))
-                    random_effects_by_annotator[annotator][prop_name] = random_shift
-                    random_effects_by_prop[prop_name][annotator] = random_shift
 
-        return (
-            ModuleDict(random_effects_by_annotator),
-            ModuleDict(random_effects_by_prop),
-        )
+                    # PyTorch doesn't allow periods in parameter names
+                    prop_name = "-".join([subspace, p]).replace(".", "-")
 
-    def _get_distribution(self, mu, random, prop_type):
-        if prop_type == BINARY:
+                    # Store parameters both by annnotator and by property
+                    # for easy
+                    random_effects[prop_name][annotator] = random_shift
+
+        self.random_effects = ModuleDict(random_effects)
+
+    def _get_distribution(self, mu, random):
+        if len(mu) == 1:
             return Bernoulli(torch.sigmoid(mu + random))
         else:
             return Categorical(torch.softmax(mu + random, -1))
+
+    def _get_prop_dim(self, subspace, prop):
+        prop_data = self.metadata.metadata[subspace][prop].value
+        if prop_data.is_categorical:
+            n_categories = len(prop_data.categories)
+            # conditional categorical properties require an
+            # additional dimension for the "does not apply" case
+            if prop in CONDITIONAL_PROPERTIES:
+                return n_categories + 1
+            # non-conditional, ordinal categorical properties
+            if prop_data.is_ordered_categorical:
+                return n_categories
+            # non-conditional, binary categorical properties
+            else:
+                return n_categories - 1
+        # currently no non-categorical properties in UDS
+        else:
+            raise ValueError(
+                f"Non-categorical property {property} found in subspace {subspace}"
+            )
 
     def random_loss(self):
         """Computes log likelihood of annotator random effects
@@ -59,7 +77,9 @@ class Likelihood(Module, metaclass=ABCMeta):
         Random effects terms are assumed to be distributed multivariate normal
         """
         loss = torch.FloatTensor([0.0])
-        for prop, param_dict in self.random_effects_by_prop.items():
+
+        # Loss computed by property
+        for prop, param_dict in self.random_effects.items():
 
             # All random shift parameters for a particular property
             random = torch.stack([p.data for p in param_dict.values()])
@@ -81,15 +101,11 @@ class Likelihood(Module, metaclass=ABCMeta):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        # TODO: incorporate confidence
         likelihoods = {}
-        for domain, props in annotation.items():
-            if domain in self.prop_domains:
+        for subspace, props in annotation.items():
+            if subspace in self.property_subspaces:
                 for p in props:
-
-                    # Determine the property type
-                    prop_type = self.prop_attrs[domain][p]["type"]
-                    prop_name = "-".join([domain, p]).replace(".", "-")
+                    prop_name = "-".join([subspace, p]).replace(".", "-")
 
                     # The mean for the current property, for each event type
                     mu = mus[prop_name]
@@ -108,12 +124,13 @@ class Likelihood(Module, metaclass=ABCMeta):
                         random = self.random_effects[annotator][prop_name]
 
                         # Get the appropriate distribution
-                        dist = self._get_distribution(mu, random, prop_type)
+                        dist = self._get_distribution(mu, random)
 
                         # Compute log likelihood
                         likelihood = dist.log_prob(torch.Tensor([value]))
 
                         # Add to likelihood-by-property
+                        # TODO: key on prop_name instead of p?
                         if p in likelihoods:
                             likelihoods[p] += likelihood
                         else:
@@ -123,8 +140,13 @@ class Likelihood(Module, metaclass=ABCMeta):
 
 class PredicateNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(annotator_ids, annotator_conf, PREDICATE_ANNOTATION_ATTRIBUTES)
+    def __init__(
+        self,
+        annotator_confidences: Dict[str, Dict[int, float]],
+        metadata: "UDSAnnotationMetadata",
+    ):
+        super().__init__(PREDICATE_NODE_SUBSPACES, annotator_confidences, metadata)
+        self._initialize_random_effects()
 
     @overrides
     def forward(
@@ -135,12 +157,13 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
 
 class ArgumentNodeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(annotator_ids, annotator_conf, ARGUMENT_ANNOTATION_ATTRIBUTES)
-        (
-            self.random_effects,
-            self.random_effects_by_prop,
-        ) = self._initialize_random_effects(self.annotator_ids)
+    def __init__(
+        self,
+        annotator_confidences: Dict[str, Dict[int, float]],
+        metadata: "UDSAnnotationMetadata",
+    ):
+        super().__init__(ARGUMENT_NODE_SUBSPACES, annotator_confidences, metadata)
+        self._initialize_random_effects()
 
     @overrides
     def forward(
@@ -152,10 +175,13 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
 
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(
-            annotator_ids, annotator_conf, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES
-        )
+    def __init__(
+        self,
+        annotator_confidences: Dict[str, Dict[int, float]],
+        metadata: "UDSAnnotationMetadata",
+    ):
+        super().__init__(SEMANTICS_EDGE_SUBSPACES, annotator_confidences, metadata)
+        self._initialize_random_effects()
 
     @overrides
     def forward(
@@ -166,41 +192,16 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):
     @overrides
-    def __init__(self, annotator_ids: Dict[str, str], annotator_conf: Dict[str, set]):
-        super().__init__(
-            annotator_ids, annotator_conf, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES
-        )
+    def __init__(
+        self,
+        annotator_confidences: Dict[str, Dict[int, float]],
+        metadata: "UDSAnnotationMetadata",
+    ):
+        super().__init__(DOCUMENT_EDGE_SUBSPACES, annotator_confidences, metadata)
+        self._initialize_random_effects()
 
     @overrides
     def forward(
         self, mus: ParameterDict, cov: ParameterList, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
         pass
-
-    @overrides
-    def _initialize_random_effects(self, annotator_ids: Dict[str, str]):
-        random_effects_by_annotator = defaultdict(ParameterDict)
-        random_effects_by_prop = defaultdict(ParameterDict)
-        for domain in self.prop_domains:
-            for annotator in annotator_ids[domain]:
-                for p in self.prop_attrs[domain].keys():
-                    prop_name = "-".join([domain, p]).replace(".", "-")
-                    prop_dim = self.prop_attrs[domain][p]["dim"]
-                    if domain == "mereology":
-                        # TODO: we may want a single random effect for both
-                        # directions of mereological containment
-                        random_shift = Parameter(torch.randn(prop_dim))
-                    elif domain == "time":
-                        # Separate per-annotator shift terms for each possible
-                        # mereological relation
-                        random_shift = Parameter(
-                            torch.randn(N_MEREOLOGICAL_RELATIONS, prop_dim)
-                        )
-                    else:
-                        raise ValueError(
-                            "Unrecognized domain for document edge annotations!"
-                        )
-        return (
-            ModuleDict(random_effects_by_annotator),
-            ModuleDict(random_effects_by_prop),
-        )

@@ -6,7 +6,6 @@ from event_type_induction.modules.factor_graph import (
     PriorFactorNode,
     FactorGraph,
 )
-from event_type_induction.constants import *
 from event_type_induction.modules.likelihood import (
     ArgumentNodeAnnotationLikelihood,
     PredicateNodeAnnotationLikelihood,
@@ -15,6 +14,7 @@ from event_type_induction.modules.likelihood import (
 )
 from event_type_induction.modules.freezable_module import FreezableModule
 from event_type_induction.utils import load_annotator_ids, ridit_score_confidence
+from event_type_induction.constants import *
 
 # Package-external imports
 import torch
@@ -23,7 +23,7 @@ from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict, ParameterList, ModuleDict
 from torch.nn.functional import softmax
-from torch.distributions import Categorical, Normal, Bernoulli, MultivariateNormal
+from torch.distributions import Categorical, Bernoulli, MultivariateNormal
 from typing import Dict, Tuple
 
 
@@ -106,17 +106,13 @@ class EventTypeInductionModel(FreezableModule):
         self.relation_probs[:, self.n_entity_types :, -1] = 0
 
         # Initialize mus (expected annotations)
-        self.event_mus = clz._initialize_event_params(
-            PREDICATE_ANNOTATION_ATTRIBUTES, self.n_event_types
+        self.event_mus = self._initialize_event_params(uds, self.n_event_types)
+        self.role_mus = self._initialize_role_params(uds, self.n_role_types)
+        self.participant_mus = self._initialize_participant_params(
+            uds, self.n_participant_types
         )
-        self.role_mus = clz._initialize_role_params(
-            SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES, self.n_role_types
-        )
-        self.participant_mus = clz._initialize_participant_params(
-            ARGUMENT_ANNOTATION_ATTRIBUTES, self.n_participant_types
-        )
-        self.relation_mus, self.relation_covs = clz._initialize_relation_params(
-            DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES, self.n_relation_types
+        self.relation_mus, self.relation_covs = self._initialize_relation_params(
+            uds, self.n_relation_types
         )
 
         # Fetch annotator IDs from UDS, used by the likelihood
@@ -131,80 +127,105 @@ class EventTypeInductionModel(FreezableModule):
         # Load ridit-scored annotator confidence values
         ridits = ridit_score_confidence(uds)
         pred_node_annotator_confidence = {
-            anno: ridits.get(anno) for s in pred_node_annotators.values() for anno in s
+            a: ridits.get(a) for a in pred_node_annotators
         }
-        arg_node_annotator_confidence = {
-            anno: ridits.get(anno) for s in arg_node_annotators.values() for anno in s
-        }
-        sem_edge_annotator_confidence = {
-            anno: ridits.get(anno) for s in sem_edge_annotators.values() for anno in s
-        }
-        doc_edge_annotator_confidence = {
-            anno: ridits.get(anno) for s in doc_edge_annotators.values() for anno in s
-        }
+        arg_node_annotator_confidence = {a: ridits.get(a) for a in arg_node_annotators}
+        sem_edge_annotator_confidence = {a: ridits.get(a) for a in sem_edge_annotators}
+        doc_edge_annotator_confidence = {a: ridits.get(a) for a in doc_edge_annotators}
 
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
-            pred_node_annotators, pred_node_annotator_confidence
+            pred_node_annotator_confidence, self.uds.metadata.sentence_metadata
         )
         self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
-            arg_node_annotators, arg_node_annotator_confidence
+            arg_node_annotator_confidence, self.uds.metadata.sentence_metadata
         )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
-            sem_edge_annotators, sem_edge_annotator_confidence
+            sem_edge_annotator_confidence, self.uds.metadata.sentence_metadata
         )
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
-            doc_edge_annotators, doc_edge_annotator_confidence
+            doc_edge_annotator_confidence, self.uds.metadata.document_metadata
         )
 
-    @classmethod
-    def _initialize_event_params(cls, attribute_dict, n_types) -> ParameterDict:
-        """Initialize mu parameters for predicate node properties, for every cluster"""
-        # TODO
-        pass
+    def _get_prop_dim(self, subspace, prop):
 
-    @classmethod
-    def _initialize_role_params(cls, attribute_dict, n_types) -> ParameterDict:
-        """Initialize parameters for semantics edge attributes"""
-        # TODO
-        pass
+        # determine whether this is a sentence or document property
+        if prop in self.uds.metadata.sentence_metadata.properties(subspace):
+            meta = self.uds.metadata.sentence_metadata.metadata
+        else:
+            meta = self.uds.metadata.document_metadata.metadata
+        prop_data = meta[subspace][prop].value
 
-    @classmethod
-    def _initialize_participant_params(cls, attribute_dict, n_types) -> ParameterDict:
-        """Initialize mu parameters for argument node properties, for every cluster"""
+        # determine property dimension
+        if prop_data.is_categorical:
+            n_categories = len(prop_data.categories)
+            # conditional categorical properties require an
+            # additional dimension for the "does not apply" case
+            if prop in CONDITIONAL_PROPERTIES:
+                return n_categories + 1
+            # non-conditional, ordinal categorical properties
+            if prop_data.is_ordered_categorical:
+                return n_categories
+            # non-conditional, binary categorical properties
+            else:
+                return n_categories - 1
+        # currently no non-categorical properties in UDS
+        else:
+            raise ValueError(
+                f"Non-categorical property {property} found in subspace {subspace}"
+            )
 
-        # One mu per event type (cluster)
+    def _initialize_params(self, uds, n_types, subspaces) -> ParameterDict:
+        """Initialize mu parameters for properties of a set of subspaces"""
         mu_dict = {}
-        for domain, props in attribute_dict.items():
-            for prop, prop_features in props.items():
-                # Dictionary keys are of the form 'domain-prop'
-                prop_name = "-".join([domain, prop]).replace(".", "-")
-                mu_dict[prop_name] = cls._initialize_log_prob(
-                    (n_types, prop_features["dim"])
+        for subspace in subspaces:
+            for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
+                subspace
+            ].items():
+                prop_dim = self._get_prop_dim(subspace, prop)
+                mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
+                    (n_types, prop_dim)
                 )
+
         return ParameterDict(mu_dict)
 
-    @classmethod
+    def _initialize_event_params(self, uds, n_types) -> ParameterDict:
+        """Initialize mu parameters for predicate node properties, for every cluster"""
+        return self._initialize_params(uds, n_types, EVENT_SUBSPACES)
+
+    def _initialize_role_params(self, uds, n_types) -> ParameterDict:
+        """Initialize parameters for semantics edge attributes"""
+        return self._initialize_params(uds, n_types, ROLE_SUBSPACES)
+
+    def _initialize_participant_params(self, uds, n_types) -> ParameterDict:
+        """Initialize mu parameters for argument node properties, for every cluster"""
+        return self._initialize_params(uds, n_types, PARTICIPANT_SUBSPACES)
+
     def _initialize_relation_params(
-        cls, attribute_dict, n_types
+        self, uds, n_types
     ) -> Tuple[ParameterDict, ParameterList]:
         """Initialize parameters for document edge attributes"""
         mu_dict = {}
 
-        # Mereology mus are initialized as normal binary properties are
-        for prop, prop_features in attribute_dict["mereology"].items():
-            prop_name = "-".join(["mereology", prop]).replace(".", "-")
-            mu_dict[prop_name] = cls._initialize_log_prob(
-                (n_types, prop_features["dim"])
-            )
-
-        # Time parameters are conditioned on the type of mereological relation
-        for prop, prop_features in attribute_dict["time"].items():
-            prop_name = "-".join(["time", prop]).replace(".", "-")
-            mu_dict[prop_name] = cls._initialize_log_prob(
-                (n_types, prop_features["dim"])
-            )
-            cov_list = [Parameter(torch.eye(prop_features["dim"]))]
+        for subspace in RELATION_SUBSPACES:
+            # temporal relations are handled specially below
+            if subspace == "time":
+                continue
+            for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
+                subspace
+            ].items():
+                prop_dim = self._get_prop_dim(subspace, prop)
+                mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
+                    (n_types, prop_dim)
+                )
+        # temporal relations are distributed MV normal --- separate
+        # means and covariances for each type (although they are)
+        # TODO: initialization should probably enforce endpoint constraints
+        cov_list = [Parameter(torch.eye(4)) for _ in range(n_types)]
+        mu_sample_dist = torch.distributions.MultivariateNormal(
+            torch.FloatTensor([50, 50, 50, 50]), torch.eye(4) * 5
+        )
+        mu_dict["time"] = Parameter(mu_sample_dist.sample((n_types,)))
 
         return ParameterDict(mu_dict), ParameterList(cov_list)
 

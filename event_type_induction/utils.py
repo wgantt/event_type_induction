@@ -3,7 +3,7 @@ import os
 import torch
 
 from collections import defaultdict
-from decomp import UDSCorpus, RawUDSDataset
+from decomp import UDSCorpus, RawUDSAnnotation
 from event_type_induction.constants import *
 from glob import glob
 from pkg_resources import resource_filename
@@ -20,36 +20,31 @@ def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
         be extracted
     """
 
-    def helper(items, prop_attrs, annotators_by_domain):
-        prop_domains = prop_attrs.keys()
-        for item, annotation in items:
-            for domain, props in annotation.items():
-                if domain in prop_domains:
-                    for p in annotation[domain].keys():
-                        annotators_by_domain[domain] = annotators_by_domain[
-                            domain
-                        ].union(props[p]["value"].keys())
+    # predicate nodoe subspaces: time, genericity, factuality, event_structure
+    pred_node_annotators = set()
+    for subspace in PREDICATE_NODE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        if subspace == "genericity":
+            # filter down to only predicate node genericity annotators
+            subspace_annotators = {a for a in subspace_annotators if "pred" in a}
+        pred_node_annotators = pred_node_annotators.union(subspace_annotators)
 
-    # Process sentence-level annotations
-    pred_node_annotators = defaultdict(set)
-    arg_node_annotators = defaultdict(set)
-    sem_edge_annotators = defaultdict(set)
-    doc_edge_annotators = defaultdict(set)
-    for graph in uds:
-        pred_items = uds[graph].predicate_nodes.items()
-        arg_items = uds[graph].argument_nodes.items()
-        sem_edge_items = uds[graph].semantics_edges().items()
+    # argument node subspaces: genericity, wordsense
+    arg_node_annotators = set()
+    for subspace in ARGUMENT_NODE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        if subspace == "genericity":
+            # filter down to only argument node genericity annotators
+            subspace_annotators = {a for a in subspace_annotators if "arg" in a}
+        arg_node_annotators = arg_node_annotators.union(subspace_annotators)
 
-        helper(pred_items, PREDICATE_ANNOTATION_ATTRIBUTES, pred_node_annotators)
-        helper(arg_items, ARGUMENT_ANNOTATION_ATTRIBUTES, arg_node_annotators)
-        helper(
-            sem_edge_items, SEMANTICS_EDGE_ANNOTATION_ATTRIBUTES, sem_edge_annotators
-        )
+    # semantics edge subspaces: protoroles, distributivity
+    sem_edge_annotators = set()
+    for subspace in SEMANTICS_EDGE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        sem_edge_annotators = sem_edge_annotators.union(subspace_annotators)
 
-    # Process document-level annotations
-    for doc in uds.documents.values():
-        doc_edge_items = doc.document_graph.edges.items()
-        helper(doc_edge_items, DOCUMENT_EDGE_ANNOTATION_ATTRIBUTES, doc_edge_annotators)
+    doc_edge_annotators = uds.metadata.document_metadata.annotators()
 
     return (
         pred_node_annotators,
@@ -91,14 +86,16 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
         be loaded
     """
     data_dir = resource_filename("event_type_induction", "data")
-    annotation_paths = glob(os.path.join(data_dir, "*.json"))
-    for path in annotation_paths:
-        if "mereology" in path:
-            is_document_level = True
-        else:
-            is_document_level = False
-        annotation = RawUDSDataset.from_json(path)
-        uds.add_annotation(annotation, is_document_level=is_document_level)
+    mereology = RawUDSAnnotation.from_json(os.path.join(data_dir, "mereology.json"))
+    distributivity = RawUDSAnnotation.from_json(
+        os.path.join(data_dir, "distributivity.json")
+    )
+    natural_parts = RawUDSAnnotation.from_json(
+        os.path.join(data_dir, "natural_parts_and_telicity.json")
+    )
+
+    # arguments are (sentence_annotations, document_annotations)
+    uds.add_annotation([natural_parts, distributivity], [mereology])
 
 
 def ridit_score_confidence(
