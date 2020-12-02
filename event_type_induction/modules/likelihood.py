@@ -37,7 +37,7 @@ class Likelihood(Module, metaclass=ABCMeta):
                     random_shift = Parameter(torch.randn(prop_dim))
 
                     # PyTorch doesn't allow periods in parameter names
-                    prop_name = "-".join([subspace, p]).replace(".", "-")
+                    prop_name = p.replace(".", "-")
 
                     # Store parameters both by annnotator and by property
                     # for easy
@@ -46,8 +46,8 @@ class Likelihood(Module, metaclass=ABCMeta):
         self.random_effects = ModuleDict(random_effects)
 
     def _get_distribution(self, mu, random):
-        if len(mu) == 1:
-            return Bernoulli(torch.sigmoid(mu + random))
+        if mu.shape[-1] == 1:
+            return Bernoulli(torch.exp(mu + random))
         else:
             return Categorical(torch.softmax(mu + random, -1))
 
@@ -101,36 +101,40 @@ class Likelihood(Module, metaclass=ABCMeta):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
+        """Compute the likelihood for a single annotation for a set of subspaces"""
         likelihoods = {}
-        for subspace, props in annotation.items():
-            if subspace in self.property_subspaces:
-                for p in props:
-                    prop_name = "-".join([subspace, p]).replace(".", "-")
+        for subspace in self.property_subspaces:
+            if subspace in annotation:
+                for p in annotation[subspace]:
+                    prop_name = p.replace(".", "-")
 
-                    # The mean for the current property, for each event type
+                    # The mean for the current property
                     mu = mus[prop_name]
 
-                    # Compute log likelihood for each annotator (for training,
-                    # this should execute just once, as train data has only a
-                    # single annotation)
-                    for annotator, value in props[p]["value"].items():
+                    # Compute log likelihood for each annotator in the annotation
+                    # (for training, this should execute just once, as train data
+                    # has only a single annotation per node)
+                    for annotator, value in annotation[subspace][p]["value"].items():
 
-                        # Ignores none-valued EventStructure annotations and
-                        # list-valued Time annotations, handled by override
-                        if value is None or isinstance(value, list):
-                            continue
+                        # Annotator indicated the property doesn't apply;
+                        # select last category in the categorical distribution
+                        if value is None:
+                            value = mu.shape[-1] - 1
+                        # Obtain category index for string-valued annotations
+                        elif isinstance(value, str):
+                            value = self.str_to_category[value]
 
                         # Grab the random intercept for the current annotator
-                        random = self.random_effects[annotator][prop_name]
+                        # TODO: handle unseen annotators
+                        random = self.random_effects[prop_name][annotator]
 
                         # Get the appropriate distribution
                         dist = self._get_distribution(mu, random)
 
                         # Compute log likelihood
-                        likelihood = dist.log_prob(torch.Tensor([value]))
+                        likelihood = dist.log_prob(torch.FloatTensor([value]))
 
                         # Add to likelihood-by-property
-                        # TODO: key on prop_name instead of p?
                         if p in likelihoods:
                             likelihoods[p] += likelihood
                         else:
@@ -147,6 +151,10 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
     ):
         super().__init__(PREDICATE_NODE_SUBSPACES, annotator_confidences, metadata)
         self._initialize_random_effects()
+        self.str_to_category = {
+            cat: idx
+            for idx, cat in enumerate(metadata["time"]["duration"].value.categories)
+        }
 
     @overrides
     def forward(
@@ -169,7 +177,6 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        # Likelihood computation is similarly straightforward
         return super().forward(mus, annotation)
 
 
@@ -187,7 +194,47 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        return super().forward(mus, annotation)
+        """Compute the likelihood for a single annotation for a set of subspaces"""
+        likelihoods = {}
+        for subspace in self.property_subspaces:
+            if subspace in annotation:
+                for p in annotation[subspace]:
+                    prop_name = p.replace(".", "-")
+
+                    # The mean for the current property
+                    mu = mus[prop_name]
+
+                    # Compute log likelihood for each annotator in the annotation
+                    # (for training, this should execute just once, as train data
+                    # has only a single annotation per node)
+                    for annotator, value in annotation[subspace][p]["value"].items():
+
+                        # Annotation value has to be specially determined for protoroles
+                        if subspace == "protoroles":
+
+                            # Annotator "confidence" actually determines whether the
+                            # property applies or not
+                            raw_conf = annotation[subspace][p]["confidence"][annotator]
+                            if raw_conf == 0:
+                                # Property doesn't apply; select last category
+                                value = mu.shape[-1] - 1
+                            # Otherwise, we use the value as given
+
+                        # Grab the random intercept for the current annotator
+                        random = self.random_effects[prop_name][annotator]
+
+                        # Get the appropriate distribution
+                        dist = self._get_distribution(mu, random)
+
+                        # Compute log likelihood
+                        likelihood = dist.log_prob(torch.FloatTensor([value]))
+
+                        # Add to likelihood-by-property
+                        if p in likelihoods:
+                            likelihoods[p] += likelihood
+                        else:
+                            likelihoods[p] = likelihood
+        return likelihoods
 
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):
@@ -201,7 +248,80 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         self._initialize_random_effects()
 
     @overrides
+    def _initialize_random_effects(self) -> ModuleDict:
+        random_effects = defaultdict(ParameterDict)
+        for subspace in self.property_subspaces - {"time"}:
+            for annotator in self.metadata.annotators(subspace):
+                for p in self.metadata.properties(subspace):
+
+                    # Determine property dimension
+                    prop_dim = self._get_prop_dim(subspace, p)
+
+                    # Single random intercept term per annotator per property
+                    random_shift = Parameter(torch.randn(prop_dim))
+
+                    # PyTorch doesn't allow periods in parameter names
+                    prop_name = p.replace(".", "-")
+
+                    # Store parameters both by annnotator and by property
+                    # for easy
+                    random_effects[prop_name][annotator] = random_shift
+
+        # Each of the two start- and endpoints in temporal relations are
+        # treated as separate properties, but we model them together as
+        # a single 4-tuple property
+        for annotator in self.metadata.annotators("time"):
+            # TODO: maybe initialize with greater variance?
+            random_effects["time"][annotator] = Parameter(torch.randn(4))
+
+        self.random_effects = ModuleDict(random_effects)
+
+    @overrides
     def forward(
-        self, mus: ParameterDict, cov: ParameterList, annotation: Dict[str, Any]
+        self, mus: ParameterDict, cov: Parameter, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        pass
+        likelihoods = {}
+        temp_rels = defaultdict(list)
+        for subspace in self.property_subspaces:
+            if subspace in annotation:
+                for p in annotation[subspace]:
+                    prop_name = p.replace(".", "-")
+
+                    # Compute log likelihood for each annotator in the annotation
+                    # (for training, this should execute just once, as train data
+                    # has only a single annotation per node)
+                    for annotator, value in annotation[subspace][p]["value"].items():
+
+                        if subspace == "time":
+                            temp_rels[annotator].append(value)
+                            continue
+                            # TODO: figure out how to handle confidence for time
+
+                        # The mean for the current property
+                        mu = mus[prop_name]
+
+                        # Grab the random intercept for the current annotator
+                        random = self.random_effects[prop_name][annotator]
+
+                        # Get the appropriate distribution
+                        dist = self._get_distribution(mu, random)
+
+                        # Compute log likelihood
+                        likelihood = dist.log_prob(torch.FloatTensor([value]))
+
+                        # Add to likelihood-by-property
+                        if p in likelihoods:
+                            likelihoods[p] += likelihood
+                        else:
+                            likelihoods[p] = likelihood
+
+        # Can only compute the likelihood for temporal relations once
+        # we have all four start- and endpoints for each annotator
+        mu = mus["time"]
+        likelihoods["time"] = torch.zeros(mu.shape[0])
+        for a, rels in temp_rels.items():
+            random = self.random_effects["time"][a]
+            likelihoods["time"] += MultivariateNormal(mu + random, cov).log_prob(
+                torch.Tensor(rels)
+            )
+        return likelihoods

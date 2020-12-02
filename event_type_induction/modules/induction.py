@@ -23,7 +23,7 @@ from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict, ParameterList, ModuleDict
 from torch.nn.functional import softmax
-from torch.distributions import Categorical, Bernoulli, MultivariateNormal
+from torch.distributions import Categorical, Bernoulli, MultivariateNormal, Uniform
 from typing import Dict, Tuple
 
 
@@ -75,15 +75,15 @@ class EventTypeInductionModel(FreezableModule):
         clz = self.__class__
 
         # Event types
-        self.event_probs = clz._initialize_log_prob((self.n_event_types))
+        self.event_probs = clz._initialize_log_prob((self.n_event_types,))
 
         # Participants are either events or entities, which is
         # determined by a Bernoulli
-        self.participant_domain_prob = clz._initialize_log_prob((1))
+        self.participant_domain_prob = clz._initialize_log_prob((1,))
 
         # Entity-type participant probabilities (event-type participants
         # are selected from event_probs above)
-        self.entity_probs = clz._initialize_log_prob((self.n_entity_types))
+        self.entity_probs = clz._initialize_log_prob((self.n_entity_types,))
 
         # Role types: separate distribution for each event type (of the
         # predicate) and participant type (of the argument)
@@ -111,7 +111,7 @@ class EventTypeInductionModel(FreezableModule):
         self.participant_mus = self._initialize_participant_params(
             uds, self.n_participant_types
         )
-        self.relation_mus, self.relation_covs = self._initialize_relation_params(
+        self.relation_mus, self.relation_cov = self._initialize_relation_params(
             uds, self.n_relation_types
         )
 
@@ -176,7 +176,10 @@ class EventTypeInductionModel(FreezableModule):
             )
 
     def _initialize_params(self, uds, n_types, subspaces) -> ParameterDict:
-        """Initialize mu parameters for properties of a set of subspaces"""
+        """Initialize mu parameters for properties of a set of subspaces
+
+        TODO: binary properties currently initialized with zeros. Figure out why.
+        """
         mu_dict = {}
         for subspace in subspaces:
             for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
@@ -211,7 +214,7 @@ class EventTypeInductionModel(FreezableModule):
             # temporal relations are handled specially below
             if subspace == "time":
                 continue
-            for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
+            for prop, prop_metadata in uds.metadata.document_metadata.metadata[
                 subspace
             ].items():
                 prop_dim = self._get_prop_dim(subspace, prop)
@@ -220,14 +223,14 @@ class EventTypeInductionModel(FreezableModule):
                 )
         # temporal relations are distributed MV normal --- separate
         # means and covariances for each type (although they are)
-        # TODO: initialization should probably enforce endpoint constraints
-        cov_list = [Parameter(torch.eye(4)) for _ in range(n_types)]
+        # TODO: initialize based on prevalence of Allen relations
+        cov = torch.eye(4)
         mu_sample_dist = torch.distributions.MultivariateNormal(
             torch.FloatTensor([50, 50, 50, 50]), torch.eye(4) * 5
         )
         mu_dict["time"] = Parameter(mu_sample_dist.sample((n_types,)))
 
-        return ParameterDict(mu_dict), ParameterList(cov_list)
+        return ParameterDict(mu_dict), Parameter(cov)
 
     @staticmethod
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
@@ -235,7 +238,11 @@ class EventTypeInductionModel(FreezableModule):
 
         The result is returned as log probabilitiess
         """
-        return Parameter(torch.log(softmax(torch.randn(shape), -1)))
+        if shape[-1] == 1:  # Bernoulli
+            val = Uniform(0, 1).sample((shape[0],))
+        else:
+            val = softmax(torch.randn(shape), -1)
+        return Parameter(torch.log(val))
 
     def compute_annotation_likelihood(
         self, fg: FactorGraph, beliefs: Dict[str, torch.Tensor]
