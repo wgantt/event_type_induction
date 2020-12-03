@@ -18,13 +18,25 @@ class Likelihood(Module, metaclass=ABCMeta):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
     ):
-        """ABC for Event Type Induction Module likelihood computations"""
+        """ABC for Event Type Induction Module likelihood computations
+
+        Parameters
+        ----------
+        property_subspaces
+            the set of UDS subspaces associated with the likelihood
+        annotator_confidences
+            a dictionary mapping annotators to dictionaries that map
+            raw confidence scores to ridit-scored ones for that annotator
+        metadata
+            the annotation metadata for all subspaces in property_subspaces
+        """
         super().__init__()
         self.property_subspaces = property_subspaces
         self.annotator_confidences = annotator_confidences
         self.metadata = metadata
 
-    def _initialize_random_effects(self) -> ModuleDict:
+    def _initialize_random_effects(self) -> ModuleDict
+        """Initialize annotator random effects for each property"""
         random_effects = defaultdict(ParameterDict)
         for subspace in self.property_subspaces:
             for annotator in self.metadata.annotators(subspace):
@@ -46,12 +58,14 @@ class Likelihood(Module, metaclass=ABCMeta):
         self.random_effects = ModuleDict(random_effects)
 
     def _get_distribution(self, mu, random):
-        if mu.shape[-1] == 1:
+        """Generates an appropriate distribution given a mean and random effect"""
+        if mu.shape[-1] == 1: # last dim is the property dimension
             return Bernoulli(torch.exp(mu + random))
         else:
             return Categorical(torch.softmax(mu + random, -1))
 
     def _get_prop_dim(self, subspace, prop):
+        """Determines the appropriate dimension for a UDS property"""
         prop_data = self.metadata.metadata[subspace][prop].value
         if prop_data.is_categorical:
             n_categories = len(prop_data.categories)
@@ -74,7 +88,7 @@ class Likelihood(Module, metaclass=ABCMeta):
     def random_loss(self):
         """Computes log likelihood of annotator random effects
 
-        Random effects terms are assumed to be distributed multivariate normal
+        Random effects terms are assumed to be distributed MV normal
         """
         loss = torch.FloatTensor([0.0])
 
@@ -120,12 +134,12 @@ class Likelihood(Module, metaclass=ABCMeta):
                         # select last category in the categorical distribution
                         if value is None:
                             value = mu.shape[-1] - 1
+
                         # Obtain category index for string-valued annotations
                         elif isinstance(value, str):
                             value = self.str_to_category[value]
 
                         # Grab the random intercept for the current annotator
-                        # TODO: handle unseen annotators
                         random = self.random_effects[prop_name][annotator]
 
                         # Get the appropriate distribution
@@ -134,11 +148,19 @@ class Likelihood(Module, metaclass=ABCMeta):
                         # Compute log likelihood
                         likelihood = dist.log_prob(torch.FloatTensor([value]))
 
+                        # Get annotator confidence
+                        conf = annotation[subspace][p]["confidence"][annotator]
+                        ridit_conf = self.annotator_confidences[annotator]
+                        if ridit_conf is None or ridit_conf.get(conf) is None or ridit_conf[conf] < 0:
+                            ridit_conf = 1
+                        else:
+                            ridit_conf = ridit_conf.get(conf,1)
+
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += likelihood
+                            likelihoods[p] += ridit_conf*likelihood
                         else:
-                            likelihoods[p] = likelihood
+                            likelihoods[p] = ridit_conf*likelihood
         return likelihoods
 
 
@@ -209,16 +231,26 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                     # has only a single annotation per node)
                     for annotator, value in annotation[subspace][p]["value"].items():
 
+                        # Get annotator confidence
+                        conf = annotation[subspace][p]["confidence"][annotator]
+
                         # Annotation value has to be specially determined for protoroles
                         if subspace == "protoroles":
 
                             # Annotator "confidence" actually determines whether the
                             # property applies or not
-                            raw_conf = annotation[subspace][p]["confidence"][annotator]
-                            if raw_conf == 0:
+                            if conf == 0:
                                 # Property doesn't apply; select last category
                                 value = mu.shape[-1] - 1
                             # Otherwise, we use the value as given
+                            
+                            # No confidence value for protoroles; default to 1
+                            ridit_conf = 1
+
+                        # All other properties (currently, just distributivity) use
+                        # confidence as given
+                        else:
+                            ridit_conf = self.annotator_confidences[annotator].get(conf, 1)
 
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[prop_name][annotator]
@@ -231,9 +263,9 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += likelihood
+                            likelihoods[p] += ridit_conf*likelihood
                         else:
-                            likelihoods[p] = likelihood
+                            likelihoods[p] = ridit_conf*likelihood
         return likelihoods
 
 
@@ -282,6 +314,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
     ) -> Dict[str, Tensor]:
         likelihoods = {}
         temp_rels = defaultdict(list)
+        temp_rel_confs = defaultdict(int)
         for subspace in self.property_subspaces:
             if subspace in annotation:
                 for p in annotation[subspace]:
@@ -294,8 +327,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
                         if subspace == "time":
                             temp_rels[annotator].append(value)
+                            conf = annotation[subspace][p]["confidence"][annotator]
+                            temp_rel_confs[annotator] = self.annotator_confidences[annotator].get(conf,1)
                             continue
-                            # TODO: figure out how to handle confidence for time
 
                         # The mean for the current property
                         mu = mus[prop_name]
@@ -309,19 +343,28 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                         # Compute log likelihood
                         likelihood = dist.log_prob(torch.FloatTensor([value]))
 
+                        # Get annotator confidence
+                        conf = annotation[subspace][p]["confidence"][annotator]
+                        ridit_conf = self.annotator_confidences[annotator].get(conf, 1)
+
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += likelihood
+                            likelihoods[p] += ridit_conf*likelihood
                         else:
-                            likelihoods[p] = likelihood
+                            likelihoods[p] = ridit_conf*likelihood
 
         # Can only compute the likelihood for temporal relations once
-        # we have all four start- and endpoints for each annotator
+        # we have all four start- and endpoints for each annotator.
+        # We assume the endpoints are distrubted MV normal.
         mu = mus["time"]
+        invcov = torch.inverse(cov)
         likelihoods["time"] = torch.zeros(mu.shape[0])
         for a, rels in temp_rels.items():
             random = self.random_effects["time"][a]
-            likelihoods["time"] += MultivariateNormal(mu + random, cov).log_prob(
-                torch.Tensor(rels)
+            x_minus_mu = torch.Tensor(rels) - (mu + random)
+            mv_normal_log_prob = torch.matmul(
+                torch.matmul(x_minus_mu.unsqueeze(1), invcov),
+                torch.transpose(x_minus_mu.unsqueeze(1), 1, 2),
             )
+            likelihoods["time"] += temp_rel_confs[a]*mv_normal_log_prob.squeeze()
         return likelihoods

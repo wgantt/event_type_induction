@@ -21,7 +21,7 @@ import torch
 import decomp
 from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
-from torch.nn import Parameter, ParameterDict, ParameterList, ModuleDict
+from torch.nn import Parameter, ParameterDict
 from torch.nn.functional import softmax
 from torch.distributions import Categorical, Bernoulli, MultivariateNormal, Uniform
 from typing import Dict, Tuple
@@ -111,7 +111,7 @@ class EventTypeInductionModel(FreezableModule):
         self.participant_mus = self._initialize_participant_params(
             uds, self.n_participant_types
         )
-        self.relation_mus, self.relation_cov = self._initialize_relation_params(
+        self.relation_mus, self.relation_covs = self._initialize_relation_params(
             uds, self.n_relation_types
         )
 
@@ -176,10 +176,7 @@ class EventTypeInductionModel(FreezableModule):
             )
 
     def _initialize_params(self, uds, n_types, subspaces) -> ParameterDict:
-        """Initialize mu parameters for properties of a set of subspaces
-
-        TODO: binary properties currently initialized with zeros. Figure out why.
-        """
+        """Initialize mu parameters for properties of a set of subspaces"""
         mu_dict = {}
         for subspace in subspaces:
             for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
@@ -206,7 +203,7 @@ class EventTypeInductionModel(FreezableModule):
 
     def _initialize_relation_params(
         self, uds, n_types
-    ) -> Tuple[ParameterDict, ParameterList]:
+    ) -> Tuple[ParameterDict, Parameter]:
         """Initialize parameters for document edge attributes"""
         mu_dict = {}
 
@@ -224,13 +221,13 @@ class EventTypeInductionModel(FreezableModule):
         # temporal relations are distributed MV normal --- separate
         # means and covariances for each type (although they are)
         # TODO: initialize based on prevalence of Allen relations
-        cov = torch.eye(4)
+        covs = torch.cat([torch.eye(4)[None] for _ in range(n_types)], dim=0)
         mu_sample_dist = torch.distributions.MultivariateNormal(
             torch.FloatTensor([50, 50, 50, 50]), torch.eye(4) * 5
         )
         mu_dict["time"] = Parameter(mu_sample_dist.sample((n_types,)))
 
-        return ParameterDict(mu_dict), Parameter(cov)
+        return ParameterDict(mu_dict), Parameter(covs)
 
     @staticmethod
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
@@ -300,8 +297,6 @@ class EventTypeInductionModel(FreezableModule):
             The UDSDocumentGraph for which to construct the factor graph
 
         TODO:
-            - Verify that messages are initialized according to the uniform
-              distribution
             - Verify that variable nodes are added only for nodes or edges
               that are actually annotated
         """

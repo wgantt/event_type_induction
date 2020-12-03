@@ -99,7 +99,7 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
 
 
 def ridit_score_confidence(
-    uds: UDSCorpus, split="train"
+    uds: UDSCorpus, split=None
 ) -> Dict[str, Dict[int, float]]:
     """Ridit score confidence values for each annotator
 
@@ -149,7 +149,7 @@ def ridit_score_confidence(
     if split is None:
         # If no split, use the whole corpus
         split_sentence_graphs = uds.graphs
-        split_doc_grapns = uds.documents
+        split_doc_graphs = uds.documents
     else:
         split_sentence_graphs = {}
         split_doc_graphs = {}
