@@ -4,10 +4,27 @@ import torch
 
 from collections import defaultdict
 from decomp import UDSCorpus, RawUDSAnnotation
+from enum import Enum
 from event_type_induction.constants import *
 from glob import glob
 from pkg_resources import resource_filename
 from typing import Any, Dict, Generator, Iterable, Set, Tuple
+
+
+class AllenRelation(Enum):
+    E1_PRECEDES_E2 = 1
+    E2_PRECEDES_E1 = 2
+    E1_MEETS_E2 = 3
+    E2_MEETS_E1 = 4
+    E1_OVERLAPS_E2 = 5
+    E2_OVERLAPS_E1 = 6
+    E1_STARTS_E2 = 7
+    E2_STARTS_E1 = 8
+    E1_DURING_E2 = 9
+    E2_DURING_E1 = 10
+    E1_FINISHES_E2 = 11
+    E2_FINISHES_E1 = 12
+    E1_EQUALS_E2 = 13
 
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
@@ -98,9 +115,42 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
     uds.add_annotation([natural_parts, distributivity], [mereology])
 
 
-def ridit_score_confidence(
-    uds: UDSCorpus, split=None
-) -> Dict[str, Dict[int, float]]:
+def get_allen_relation(
+    e1_start: int, e1_end: int, e2_start: int, e2_end: int
+) -> AllenRelation:
+    """Determines an Allen relation given two event durations"""
+    if e1_start == e2_start:
+        if e1_end == e2_end:
+            return AllenRelation.E1_EQUALS_E2
+        elif e1_end > e2_end:
+            return AllenRelation.E2_STARTS_E1
+        else:
+            return AllenRelation.E1_STARTS_E2
+    elif e1_start < e2_start:
+        if e1_end == e2_start:
+            return AllenRelation.E1_MEETS_E2
+        elif e1_end < e2_start:
+            return AllenRelation.E1_PRECEDES_E2
+        elif e1_end == e2_end:
+            return AllenRelation.E2_FINISHES_E1
+        elif e1_end > e2_end:
+            return AllenRelation.E2_DURING_E1
+        else:
+            return AllenRelation.E1_OVERLAPS_E2
+    else:  # e1_start > e2_start
+        if e2_end == e2_start:
+            return AllenRelation.E2_MEETS_E1
+        elif e2_end < e2_start:
+            return AllenRelation.E2_PRECEDES_E1
+        elif e2_end == e1_end:
+            return AllenRelation.E1_FINISHES_E2
+        elif e2_end > e1_end:
+            return AllenRelation.E1_DURING_E2
+        else:
+            return AllenRelation.E2_OVERLAPS_E1
+
+
+def ridit_score_confidence(uds: UDSCorpus, split=None) -> Dict[str, Dict[int, float]]:
     """Ridit score confidence values for each annotator
 
     TODO: generate ridit scores for all possible confidence values

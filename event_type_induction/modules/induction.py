@@ -13,12 +13,18 @@ from event_type_induction.modules.likelihood import (
     DocumentEdgeAnnotationLikelihood,
 )
 from event_type_induction.modules.freezable_module import FreezableModule
-from event_type_induction.utils import load_annotator_ids, ridit_score_confidence
+from event_type_induction.utils import (
+    load_annotator_ids,
+    ridit_score_confidence,
+    get_allen_relation,
+    AllenRelation,
+)
 from event_type_induction.constants import *
 
 # Package-external imports
 import torch
 import decomp
+import numpy as np
 from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict
@@ -218,16 +224,66 @@ class EventTypeInductionModel(FreezableModule):
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
                     (n_types, prop_dim)
                 )
-        # temporal relations are distributed MV normal --- separate
-        # means and covariances for each type (although they are)
-        # TODO: initialize based on prevalence of Allen relations
+        # temporal relations are distributed MV normal;
+        # separate means and covariances for each type
         covs = torch.cat([torch.eye(4)[None] for _ in range(n_types)], dim=0)
-        mu_sample_dist = torch.distributions.MultivariateNormal(
-            torch.FloatTensor([50, 50, 50, 50]), torch.eye(4) * 5
+
+        # Initialize temporal relation mus based on centroids for
+        # the most common Allen Relations in the data set
+        temporal_relation_centroids = self._get_temporal_relations_params()
+        sorted_centroids = torch.stack(
+            [
+                v[1]
+                for v in sorted(
+                    temporal_relation_centroids.values(),
+                    key=lambda x: x[0],
+                    reverse=True,
+                )[:n_types]
+            ]
         )
-        mu_dict["time"] = Parameter(mu_sample_dist.sample((n_types,)))
+        mu_dict["time"] = Parameter(sorted_centroids)
 
         return ParameterDict(mu_dict), Parameter(covs)
+
+    def _get_temporal_relations_params(
+        self,
+    ) -> Dict[AllenRelation, Tuple[int, torch.Tensor]]:
+        """Initializes means for temporal relation annotation likelihoods"""
+
+        # Group all temporal relations annotations by Allen Relation
+        allen_rels = defaultdict(list)
+        for docid, doc in self.uds.documents.items():
+            for edge, anno in doc.document_graph.edges().items():
+
+                # Skip document edges not annotated for temporal relations
+                if not "time" in anno:
+                    continue
+
+                # Get the four start- and endpoints for each annotator
+                time = anno["time"]
+                for annotator in time["rel-start1"]["value"]:
+                    e1_start = time["rel-start1"]["value"][annotator]
+                    e1_end = time["rel-end1"]["value"][annotator]
+                    e2_start = time["rel-start2"]["value"][annotator]
+                    e2_end = time["rel-end2"]["value"][annotator]
+
+                    # This is a hack to avoid a select few annotations that
+                    # currently have negative values, which they shouldn't
+                    if any([t < 0 for t in [e1_start, e1_end, e2_start, e2_end]]):
+                        continue
+
+                    # Determine the Allen relation for this annotation, add
+                    # it to the dictionary
+                    allen_rels[
+                        get_allen_relation(e1_start, e1_end, e2_start, e2_end)
+                    ].append([e1_start, e1_end, e2_start, e2_end])
+
+        # For each Allen relation, return the number of annotations that
+        # realize that relation and the centroid of all such annotations
+        return {
+            k: (len(v), torch.FloatTensor(np.mean(np.array(v), axis=0)))
+            for k, v in allen_rels.items()
+        }
 
     @staticmethod
     def _initialize_log_prob(shape: Tuple[int]) -> Parameter:

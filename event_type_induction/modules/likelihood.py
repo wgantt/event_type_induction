@@ -35,7 +35,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         self.annotator_confidences = annotator_confidences
         self.metadata = metadata
 
-    def _initialize_random_effects(self) -> ModuleDict
+    def _initialize_random_effects(self) -> ModuleDict:
         """Initialize annotator random effects for each property"""
         random_effects = defaultdict(ParameterDict)
         for subspace in self.property_subspaces:
@@ -59,7 +59,7 @@ class Likelihood(Module, metaclass=ABCMeta):
 
     def _get_distribution(self, mu, random):
         """Generates an appropriate distribution given a mean and random effect"""
-        if mu.shape[-1] == 1: # last dim is the property dimension
+        if mu.shape[-1] == 1:  # last dim is the property dimension
             return Bernoulli(torch.exp(mu + random))
         else:
             return Categorical(torch.softmax(mu + random, -1))
@@ -151,16 +151,20 @@ class Likelihood(Module, metaclass=ABCMeta):
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
                         ridit_conf = self.annotator_confidences[annotator]
-                        if ridit_conf is None or ridit_conf.get(conf) is None or ridit_conf[conf] < 0:
+                        if (
+                            ridit_conf is None
+                            or ridit_conf.get(conf) is None
+                            or ridit_conf[conf] < 0
+                        ):
                             ridit_conf = 1
                         else:
-                            ridit_conf = ridit_conf.get(conf,1)
+                            ridit_conf = ridit_conf.get(conf, 1)
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf*likelihood
+                            likelihoods[p] += ridit_conf * likelihood
                         else:
-                            likelihoods[p] = ridit_conf*likelihood
+                            likelihoods[p] = ridit_conf * likelihood
         return likelihoods
 
 
@@ -243,14 +247,16 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                                 # Property doesn't apply; select last category
                                 value = mu.shape[-1] - 1
                             # Otherwise, we use the value as given
-                            
+
                             # No confidence value for protoroles; default to 1
                             ridit_conf = 1
 
                         # All other properties (currently, just distributivity) use
                         # confidence as given
                         else:
-                            ridit_conf = self.annotator_confidences[annotator].get(conf, 1)
+                            ridit_conf = self.annotator_confidences[annotator].get(
+                                conf, 1
+                            )
 
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[prop_name][annotator]
@@ -263,9 +269,9 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf*likelihood
+                            likelihoods[p] += ridit_conf * likelihood
                         else:
-                            likelihoods[p] = ridit_conf*likelihood
+                            likelihoods[p] = ridit_conf * likelihood
         return likelihoods
 
 
@@ -328,7 +334,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                         if subspace == "time":
                             temp_rels[annotator].append(value)
                             conf = annotation[subspace][p]["confidence"][annotator]
-                            temp_rel_confs[annotator] = self.annotator_confidences[annotator].get(conf,1)
+                            temp_rel_confs[annotator] = self.annotator_confidences[
+                                annotator
+                            ].get(conf, 1)
                             continue
 
                         # The mean for the current property
@@ -349,9 +357,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf*likelihood
+                            likelihoods[p] += ridit_conf * likelihood
                         else:
-                            likelihoods[p] = ridit_conf*likelihood
+                            likelihoods[p] = ridit_conf * likelihood
 
         # Can only compute the likelihood for temporal relations once
         # we have all four start- and endpoints for each annotator.
@@ -366,5 +374,5 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 torch.matmul(x_minus_mu.unsqueeze(1), invcov),
                 torch.transpose(x_minus_mu.unsqueeze(1), 1, 2),
             )
-            likelihoods["time"] += temp_rel_confs[a]*mv_normal_log_prob.squeeze()
+            likelihoods["time"] += temp_rel_confs[a] * mv_normal_log_prob.squeeze()
         return likelihoods
