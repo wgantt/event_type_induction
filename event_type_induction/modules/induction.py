@@ -106,20 +106,17 @@ class EventTypeInductionModel(FreezableModule):
         # We enforce that the only possible relation type for a relation
         # involving an entity participant is "no relation." This is
         # because a relation can obtain only between two *events*
+        # TODO: check that this is actually correct
         self.relation_probs[self.n_entity_types :, :, :-1] = NEG_INF  # = log(0)
         self.relation_probs[self.n_entity_types :, :, -1] = 0  # = log(1)
         self.relation_probs[:, self.n_entity_types :, :-1] = NEG_INF
         self.relation_probs[:, self.n_entity_types :, -1] = 0
 
         # Initialize mus (expected annotations)
-        self.event_mus = self._initialize_event_params(uds, self.n_event_types)
-        self.role_mus = self._initialize_role_params(uds, self.n_role_types)
-        self.participant_mus = self._initialize_participant_params(
-            uds, self.n_participant_types
-        )
-        self.relation_mus, self.relation_covs = self._initialize_relation_params(
-            uds, self.n_relation_types
-        )
+        self.event_mus = self._initialize_event_params()
+        self.role_mus = self._initialize_role_params()
+        self.participant_mus = self._initialize_participant_params()
+        self.relation_mus, self.relation_covs = self._initialize_relation_params()
 
         # Fetch annotator IDs from UDS, used by the likelihood
         # modules to initialize their random effects
@@ -195,21 +192,21 @@ class EventTypeInductionModel(FreezableModule):
 
         return ParameterDict(mu_dict)
 
-    def _initialize_event_params(self, uds, n_types) -> ParameterDict:
+    def _initialize_event_params(self) -> ParameterDict:
         """Initialize mu parameters for predicate node properties, for every cluster"""
-        return self._initialize_params(uds, n_types, EVENT_SUBSPACES)
+        return self._initialize_params(self.uds, self.n_event_types, EVENT_SUBSPACES)
 
-    def _initialize_role_params(self, uds, n_types) -> ParameterDict:
+    def _initialize_role_params(self) -> ParameterDict:
         """Initialize parameters for semantics edge attributes"""
-        return self._initialize_params(uds, n_types, ROLE_SUBSPACES)
+        return self._initialize_params(self.uds, self.n_role_types, ROLE_SUBSPACES)
 
-    def _initialize_participant_params(self, uds, n_types) -> ParameterDict:
+    def _initialize_participant_params(self) -> ParameterDict:
         """Initialize mu parameters for argument node properties, for every cluster"""
-        return self._initialize_params(uds, n_types, PARTICIPANT_SUBSPACES)
+        return self._initialize_params(
+            self.uds, self.n_participant_types, PARTICIPANT_SUBSPACES
+        )
 
-    def _initialize_relation_params(
-        self, uds, n_types
-    ) -> Tuple[ParameterDict, Parameter]:
+    def _initialize_relation_params(self) -> Tuple[ParameterDict, Parameter]:
         """Initialize parameters for document edge attributes"""
         mu_dict = {}
 
@@ -217,31 +214,30 @@ class EventTypeInductionModel(FreezableModule):
             # temporal relations are handled specially below
             if subspace == "time":
                 continue
-            for prop, prop_metadata in uds.metadata.document_metadata.metadata[
+            for prop, prop_metadata in self.uds.metadata.document_metadata.metadata[
                 subspace
             ].items():
                 prop_dim = self._get_prop_dim(subspace, prop)
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
-                    (n_types, prop_dim)
+                    (self.n_relation_types, prop_dim)
                 )
-        # temporal relations are distributed MV normal;
-        # separate means and covariances for each type
-        covs = torch.cat([torch.eye(4)[None] for _ in range(n_types)], dim=0)
 
         # Initialize temporal relation mus based on centroids for
         # the most common Allen Relations in the data set
-        temporal_relation_centroids = self._get_temporal_relations_params()
-        sorted_centroids = torch.stack(
-            [
-                v[1]
-                for v in sorted(
-                    temporal_relation_centroids.values(),
-                    key=lambda x: x[0],
-                    reverse=True,
-                )[:n_types]
-            ]
-        )
-        mu_dict["time"] = Parameter(sorted_centroids)
+        temporal_relation_params = self._get_temporal_relations_params()
+        sorted_means, sorted_covs = [], []
+        for (_, mean, cov) in sorted(
+            temporal_relation_params.values(), key=lambda x: x[0], reverse=True
+        )[: self.n_relation_types]:
+            sorted_means.append(mean)
+            # hack to avoid initializing to singular matrices;
+            # set zero entries to 1
+            for i in range(4):
+                if cov[i][i] == 0:
+                    cov[i][i] = 1
+            sorted_covs.append(cov)
+        mu_dict["time"] = Parameter(torch.stack(sorted_means))
+        covs = torch.stack(sorted_covs)
 
         return ParameterDict(mu_dict), Parameter(covs)
 
@@ -281,7 +277,11 @@ class EventTypeInductionModel(FreezableModule):
         # For each Allen relation, return the number of annotations that
         # realize that relation and the centroid of all such annotations
         return {
-            k: (len(v), torch.FloatTensor(np.mean(np.array(v), axis=0)))
+            k: (
+                len(v),
+                torch.FloatTensor(np.mean(np.array(v), axis=0)),
+                torch.FloatTensor(np.cov(np.array(v), rowvar=False)),
+            )
             for k, v in allen_rels.items()
         }
 
@@ -535,6 +535,7 @@ class EventTypeInductionModel(FreezableModule):
                 self.doc_edge_likelihood,
                 self.relation_mus,
                 doc_edge_anno,
+                cov=self.relation_covs,
             )
             fg.set_node(doc_edge_lf_node)
             fg.set_edge(relation_v_node, doc_edge_lf_node, 0)

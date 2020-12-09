@@ -9,7 +9,7 @@ from event_type_induction.modules.likelihood import Likelihood
 from event_type_induction.constants import NEG_INF
 from overrides import overrides
 from torch import Tensor, logsumexp
-from torch.nn import ParameterDict
+from torch.nn import Parameter, ParameterDict
 from typing import List, Optional, Tuple, Any, Dict
 
 """
@@ -231,6 +231,7 @@ class LikelihoodFactorNode(FactorNode):
         factor: Likelihood,
         mus: ParameterDict,
         annotation: Dict[str, Any],
+        cov: Parameter = None,
     ):
         """Unary leaf factors to compute annotation likelihoods
 
@@ -248,12 +249,16 @@ class LikelihoodFactorNode(FactorNode):
         self.mus = mus
         self.annotation = annotation
         self.per_type_likelihood = None
+        self.cov = cov
 
     @overrides
     def sum_product(self, target_node: VariableNode) -> Tensor:
         # Compute per-property log likelihoods for each of the
         # relevant event types
-        likelihoods = self.factor(self.mus, self.annotation)
+        if self.cov is not None:
+            likelihoods = self.factor(self.mus, self.cov, self.annotation)
+        else:
+            likelihoods = self.factor(self.mus, self.annotation)
 
         # If the annotation does not include properties of interest,
         # the returned likelihoods will be empty. The likelihood in

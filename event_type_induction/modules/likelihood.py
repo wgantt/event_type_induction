@@ -59,7 +59,7 @@ class Likelihood(Module, metaclass=ABCMeta):
 
     def _get_distribution(self, mu, random):
         """Generates an appropriate distribution given a mean and random effect"""
-        if mu.shape[-1] == 1:  # last dim is the property dimension
+        if len(mu.shape) == 1:
             return Bernoulli(torch.exp(mu + random))
         else:
             return Categorical(torch.softmax(mu + random, -1))
@@ -365,14 +365,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         # we have all four start- and endpoints for each annotator.
         # We assume the endpoints are distrubted MV normal.
         mu = mus["time"]
-        invcov = torch.inverse(cov)
         likelihoods["time"] = torch.zeros(mu.shape[0])
         for a, rels in temp_rels.items():
             random = self.random_effects["time"][a]
-            x_minus_mu = torch.Tensor(rels) - (mu + random)
-            mv_normal_log_prob = torch.matmul(
-                torch.matmul(x_minus_mu.unsqueeze(1), invcov),
-                torch.transpose(x_minus_mu.unsqueeze(1), 1, 2),
-            )
-            likelihoods["time"] += temp_rel_confs[a] * mv_normal_log_prob.squeeze()
+            likelihood = MultivariateNormal(mu + random, cov).log_prob(torch.Tensor(rels))
+            likelihoods["time"] += temp_rel_confs[a] * likelihood
         return likelihoods
