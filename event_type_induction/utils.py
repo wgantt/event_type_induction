@@ -27,6 +27,14 @@ class AllenRelation(Enum):
     E1_EQUALS_E2 = 13
 
 
+def exp_normalize(t: torch.Tensor) -> torch.Tensor:
+    """Normalizes a tensor of log values using the exp-normalize trick:
+       https://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
+    """
+    t2 = torch.exp(t - t.max())
+    return torch.log(t2 / t2.sum())
+
+
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
     """Fetch all of the annotator IDs from an annotated UDS corpus
 

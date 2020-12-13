@@ -105,9 +105,17 @@ class Likelihood(Module, metaclass=ABCMeta):
             cov = torch.matmul(torch.transpose(random, 0, 1), random) / (
                 len(random) - 1
             )
+            invcov = torch.inverse(cov)
 
             # Compute loss
-            loss += MultivariateNormal(random, cov).log_prob(random).mean(0)
+            loss += (
+                torch.matmul(
+                    torch.matmul(random.unsqueeze(1), invcov),
+                    torch.transpose(random.unsqueeze(1), 1, 2),
+                )
+                .mean(0)
+                .squeeze()
+            )
 
         return loss
 
@@ -367,7 +375,14 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         mu = mus["time"]
         likelihoods["time"] = torch.zeros(mu.shape[0])
         for a, rels in temp_rels.items():
+            # Handle annoying fact that some of the temporal relations
+            # annotations have massively negative values (this needs to
+            # be fixed in the annotations themselves)
+            if any([r < 0 for r in rels]):
+                continue
             random = self.random_effects["time"][a]
-            likelihood = MultivariateNormal(mu + random, cov).log_prob(torch.Tensor(rels))
-            likelihoods["time"] += temp_rel_confs[a] * likelihood
+            # likelihood = MultivariateNormal(mu + random, cov).log_prob(
+            #     torch.Tensor(rels)
+            # )
+            # likelihoods["time"] += temp_rel_confs[a] * likelihood
         return likelihoods

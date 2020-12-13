@@ -10,8 +10,19 @@ from event_type_induction.modules.induction import (
     VariableNode,
     VariableType,
 )
-from event_type_induction.modules.likelihood import Likelihood
-from event_type_induction.utils import load_event_structure_annotations
+from event_type_induction.modules.likelihood import (
+    Likelihood,
+    PredicateNodeAnnotationLikelihood,
+    ArgumentNodeAnnotationLikelihood,
+    SemanticsEdgeAnnotationLikelihood,
+    DocumentEdgeAnnotationLikelihood,
+)
+from event_type_induction.utils import (
+    load_event_structure_annotations,
+    load_annotator_ids,
+    ridit_score_confidence,
+)
+from event_type_induction.trainers.induction_trainer import EventTypeInductionTrainer
 
 
 class TestEventTypeInductionModel(unittest.TestCase):
@@ -22,7 +33,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.n_relation_types = 4
         cls.n_entity_types = 5
 
-        cls.bp_iters = 2
+        cls.bp_iters = 1
 
         # Load UDS with raw annotations
         uds = UDSCorpus(split="train", annotation_format="raw")
@@ -44,6 +55,40 @@ class TestEventTypeInductionModel(unittest.TestCase):
         cls.test_doc_id = cls.uds["ewt-train-1"].document_id
         cls.test_doc = cls.uds.documents[cls.test_doc_id]
         cls.test_fg = cls.model.construct_factor_graph(cls.test_doc)
+
+        # All annotators
+        (
+            pred_node_annotators,
+            arg_node_annotators,
+            sem_edge_annotators,
+            doc_edge_annotators,
+        ) = load_annotator_ids(uds)
+
+        # Load ridit-scored annotator confidence values
+        ridits = ridit_score_confidence(uds)
+        cls.pred_node_annotator_confidence = {
+            a: ridits.get(a) for a in pred_node_annotators
+        }
+        cls.arg_node_annotator_confidence = {
+            a: ridits.get(a) for a in arg_node_annotators
+        }
+        cls.sem_edge_annotator_confidence = {
+            a: ridits.get(a) for a in sem_edge_annotators
+        }
+        cls.doc_edge_annotator_confidence = {
+            a: ridits.get(a) for a in doc_edge_annotators
+        }
+
+        # Trainer
+        cls.trainer = EventTypeInductionTrainer(
+            cls.n_event_types,
+            cls.n_role_types,
+            cls.n_relation_types,
+            cls.n_entity_types,
+            cls.bp_iters,
+            cls.uds,
+            model=cls.model,
+        )
 
     @unittest.skip("Faster iteration on other tests")
     def test_factor_graph_construction(self):
@@ -201,7 +246,62 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     var_node, relation_pf_node
                 ), f"{(v1, v2)} has no edge between {var_node} and the prior factor node"
 
-    # @unittest.skip("Faster iteration on other tests")
+    @unittest.skip("Faster iteration on other tests")
+    def test_predicate_node_annotation_likelihood(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+        pred_node_annotator_confidence = self.__class__.pred_node_annotator_confidence
+        pred_ll = PredicateNodeAnnotationLikelihood(
+            pred_node_annotator_confidence, uds.metadata.sentence_metadata
+        )
+        ll = torch.FloatTensor([0.0])
+        for node, anno in uds["ewt-train-12"].predicate_nodes.items():
+            ll = pred_ll(model.event_mus, anno)
+        # for k, v in model.event_mus.items():
+        #     print(f"{k}: {v.data}")
+        assert False
+
+    @unittest.skip("Faster iteration on other tests")
+    def test_semantics_edge_annotation_likelihood(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+        sem_edge_annotator_confidence = self.__class__.sem_edge_annotator_confidence
+        pred_ll = SemanticsEdgeAnnotationLikelihood(
+            sem_edge_annotator_confidence, uds.metadata.sentence_metadata
+        )
+        ll = torch.FloatTensor([0.0])
+        for edge, anno in uds["ewt-train-12"].semantics_edges().items():
+            ll = pred_ll(model.role_mus, anno)
+        assert False
+
+    @unittest.skip("Faster iteration on other tests")
+    def test_document_edge_annotation_likelihood(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+        test_doc = self.__class__.test_doc
+        doc_edge_annotator_confidence = self.__class__.doc_edge_annotator_confidence
+        doc_ll = DocumentEdgeAnnotationLikelihood(
+            doc_edge_annotator_confidence, uds.metadata.document_metadata
+        )
+        ll = torch.FloatTensor([0.0])
+        for edge, anno in test_doc.document_graph.edges().items():
+            ll = doc_ll(model.relation_mus, model.relation_covs, anno)
+        assert False
+
+    @unittest.skip("Faster iteration on other tests")
+    def test_argument_node_annotation_likelihood(self):
+        uds = self.__class__.uds
+        model = self.__class__.model
+        arg_node_annotator_confidence = self.__class__.arg_node_annotator_confidence
+        arg_ll = ArgumentNodeAnnotationLikelihood(
+            arg_node_annotator_confidence, uds.metadata.sentence_metadata
+        )
+        ll = torch.FloatTensor([0.0])
+        for node, anno in uds["ewt-train-12"].argument_nodes.items():
+            ll = arg_ll(model.participant_mus, anno)
+        assert False
+
+    @unittest.skip("Faster iteration on other tests")
     def test_node_and_edge_initialization(self):
         """Verify factor graph node and edge attributes"""
         uds = self.__class__.uds
@@ -291,7 +391,7 @@ class TestEventTypeInductionModel(unittest.TestCase):
                     n_neighbors == 1
                 ), f"LikelihoodFactorNode {node_id} has {n_neighbors} neighbors but should have only one"
 
-    # @unittest.skip("Faster iteration on other tests")
+    @unittest.skip("Faster iteration on other tests")
     def test_loopy_sum_product(self):
         """Verify that loopy sum-product (BP) runs without errors"""
         uds = self.__class__.uds
@@ -308,9 +408,15 @@ class TestEventTypeInductionModel(unittest.TestCase):
         query_nodes = list(fg.variable_nodes.values())
 
         # Test loopy sum-product
-        fg.loopy_sum_product(model.bp_iters, query_nodes)
+        fixed, random = model(test_doc)
+        assert False
 
-    # @unittest.skip("Faster iteration on other tests")
+    def test_trainer(self):
+        trainer = self.__class__.trainer
+        trainer.fit()
+        assert False
+
+    @unittest.skip("Faster iteration on other tests")
     def test_loopy_max_product(self):
         """Verify that loopy max-product runs without errors"""
         uds = self.__class__.uds

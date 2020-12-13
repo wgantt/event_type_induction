@@ -14,6 +14,7 @@ from event_type_induction.modules.likelihood import (
 )
 from event_type_induction.modules.freezable_module import FreezableModule
 from event_type_induction.utils import (
+    exp_normalize,
     load_annotator_ids,
     ridit_score_confidence,
     get_allen_relation,
@@ -37,9 +38,8 @@ class EventTypeInductionModel(FreezableModule):
     """Base module for event type induction
 
     TODO
-        - Implement forward function
         - Reduce graph size by filtering out semantics edges that don't
-          have annotations
+          have annotations (?)
     """
 
     def __init__(
@@ -107,10 +107,10 @@ class EventTypeInductionModel(FreezableModule):
         # involving an entity participant is "no relation." This is
         # because a relation can obtain only between two *events*
         # TODO: check that this is actually correct
-        self.relation_probs[self.n_entity_types :, :, :-1] = NEG_INF  # = log(0)
-        self.relation_probs[self.n_entity_types :, :, -1] = 0  # = log(1)
-        self.relation_probs[:, self.n_entity_types :, :-1] = NEG_INF
-        self.relation_probs[:, self.n_entity_types :, -1] = 0
+        # self.relation_probs[: self.n_entity_types, :, :-1] = NEG_INF  # = log(0)
+        # self.relation_probs[: self.n_entity_types, :, -1] = 0  # = log(1)
+        # self.relation_probs[:, : self.n_entity_types, :-1] = NEG_INF
+        # self.relation_probs[:, : self.n_entity_types, -1] = 0
 
         # Initialize mus (expected annotations)
         self.event_mus = self._initialize_event_params()
@@ -323,18 +323,19 @@ class EventTypeInductionModel(FreezableModule):
                 # Normalize beliefs + likelihood
                 belief = beliefs[var_node.label]
                 likelihood = lf_node.per_type_likelihood
-                belief_norm = torch.log(
-                    torch.exp(belief) / torch.sum(torch.exp(belief))
-                )
-                likelihood_norm = torch.log(
-                    torch.exp(likelihood) / torch.sum(torch.exp(likelihood))
-                )
+                # assert not (belief == np.ninf).any().item(), f"lf_node_name: {belief}"
+                # assert not (belief == np.inf).any().item(), f"lf_node_namee: {belief}"
+                # assert not (likelihood == np.ninf).any().item(), f"lf_node_name: {likelihood}"
+                # assert not (likelihood == np.inf).any().item(), f"lf_node_name: {likelihood}"
+                belief_norm = exp_normalize(belief)
+                likelihood_norm = exp_normalize(likelihood)
+                # print(var_node.label, belief_norm)
+                # print(lf_node_name, likelihood_norm)
                 ll += torch.logsumexp(belief_norm + likelihood_norm, 0)
 
-        # TODO: Fix! This is currently always NaN.
-        return ll
+        return -ll
 
-    def compute_random_loss(self):
+    def random_loss(self):
         """Compute the loss for the prior(s) over annotator random effects"""
         likelihoods = [
             self.pred_node_likelihood,
@@ -342,7 +343,9 @@ class EventTypeInductionModel(FreezableModule):
             self.semantics_edge_likelihood,
             self.doc_edge_likelihood,
         ]
-        return torch.sum([ll.random_loss() for ll in likelihoods])
+        return torch.sum(torch.FloatTensor([ll.random_loss() for ll in likelihoods]))[
+            None
+        ]
 
     def construct_factor_graph(self, document: UDSDocumentGraph) -> FactorGraph:
         """Construct the factor graph for a document
