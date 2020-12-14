@@ -1,11 +1,5 @@
 import logging, time, sys, os
 
-"""
-Logging setup taken from the torch-combinatorial package:
-
-https://github.com/aaronstevenwhite/torch-combinatorial
-"""
-
 
 def setup_logging():
     handlers = [logging.StreamHandler(sys.stdout)]
@@ -35,4 +29,4 @@ def setup_logging():
             "No main file to build a log relative to. Proceeding without stdout forwarding."
         )
 
-    return log, logpath
+    return log

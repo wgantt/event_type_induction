@@ -10,7 +10,7 @@ setup(
     packages=find_packages(),
     package_dir={"event_type_induction": "event_type_induction"},
     install_requires=[
-        "decomp==2.0.0a1",
+        "decomp==0.2.0a1",
         "decorator==4.4.*",
         "networkx==2.5.*",
         "numpy==1.17.*",

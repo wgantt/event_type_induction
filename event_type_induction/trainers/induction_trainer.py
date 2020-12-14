@@ -1,7 +1,7 @@
 import event_type_induction.utils as utils
 from event_type_induction.modules.induction import EventTypeInductionModel
 
-# from scripts.setup_logging import setup_logging
+from scripts.setup_logging import setup_logging
 
 import torch
 import random
@@ -9,8 +9,7 @@ from decomp import UDSCorpus
 from torch.nn import NLLLoss
 from torch.optim import Adam
 
-# TODO: figure out imports for logging
-# LOG = setup_logging()
+LOG = setup_logging()
 
 
 class EventTypeInductionTrainer:
@@ -60,27 +59,26 @@ class EventTypeInductionTrainer:
         optimizer = Adam(self.model.parameters(), lr=self.lr)
         batch_num = 0
 
-        # LOG.info("Adding UDS-EventStructure annotations")
+        LOG.info("Adding UDS-EventStructure annotations")
         utils.load_event_structure_annotations(self.uds)
 
         documents_by_split = utils.get_documents_by_split(self.uds)
 
-        # LOG.info(f"Beginning training for a maximum of {n_epochs} epochs.")
+        LOG.info(f"Beginning training for a maximum of {self.n_epochs} epochs.")
         for epoch in range(self.n_epochs):
             loss_trace = []
             fixed_trace = []
-            for doc in documents_by_split["train"]:
+            for doc in list(documents_by_split["train"]):
 
                 # Forward
                 self.model.zero_grad()
                 fixed_loss, random_loss = self.model(self.uds.documents[doc])
-                print(fixed_loss, random_loss)
+                LOG.info(fixed_loss)
                 loss = fixed_loss + random_loss
                 loss_trace.append(fixed_loss + random_loss)
                 fixed_trace.append(fixed_loss)
 
                 # Backward + optimizer step
-                print("calling backward!")
                 loss.backward()
                 optimizer.step()
 
