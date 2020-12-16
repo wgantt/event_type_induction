@@ -4,6 +4,7 @@ from event_type_induction.modules.induction import EventTypeInductionModel
 from scripts.setup_logging import setup_logging
 
 import torch
+import numpy as np
 import random
 from decomp import UDSCorpus
 from torch.nn import NLLLoss
@@ -40,6 +41,9 @@ class EventTypeInductionTrainer:
         self.device = torch.device(device)
         self.random_seed = random_seed
 
+        torch.manual_seed(self.random_seed)
+        np.random.seed(self.random_seed)
+
         if model is None:
             self.model = EventTypeInductionModel(
                 n_event_types,
@@ -65,20 +69,23 @@ class EventTypeInductionTrainer:
         documents_by_split = utils.get_documents_by_split(self.uds)
 
         LOG.info(f"Beginning training for a maximum of {self.n_epochs} epochs.")
-        for epoch in range(self.n_epochs):
+        for epoch in range(10):
             loss_trace = []
             fixed_trace = []
-            for doc in list(documents_by_split["train"]):
+            # Testing on a single document for now
+            for doc in sorted(list(documents_by_split["train"]))[:1]:
 
                 # Forward
                 self.model.zero_grad()
                 fixed_loss, random_loss = self.model(self.uds.documents[doc])
                 LOG.info(fixed_loss)
                 loss = fixed_loss + random_loss
+                print(fixed_loss, random_loss)
                 loss_trace.append(fixed_loss + random_loss)
                 fixed_trace.append(fixed_loss)
 
                 # Backward + optimizer step
+                print("calling backward!")
                 loss.backward()
                 optimizer.step()
 

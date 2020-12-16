@@ -168,8 +168,10 @@ class VariableNode(Node):
         for n in neighbors:
             belief += self.graph[n][self]["object"].get_message(n, self)
 
-        # TODO: normalize?
-        return belief
+        if normalize:
+            return normalize_message(belief)
+        else:
+            return belief
 
     @overrides
     def sum_product(self, target_node: "FactorNode") -> Tensor:

@@ -13,7 +13,7 @@ def main(args):
     n_role_types = 3
     n_relation_types = 4
     n_entity_types = 5
-    bp_iters = 1
+    bp_iters = 10
 
     LOG.info("Loading UDS Corpus...")
     uds = UDSCorpus(version="2.0", annotation_format="raw")
@@ -29,5 +29,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # TODO: add args
     args = parser.parse_args()
     main(args)

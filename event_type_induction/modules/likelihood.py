@@ -60,9 +60,9 @@ class Likelihood(Module, metaclass=ABCMeta):
     def _get_distribution(self, mu, random):
         """Generates an appropriate distribution given a mean and random effect"""
         if len(mu.shape) == 1:
-            return Bernoulli(torch.exp(mu + random))
+            return Bernoulli(torch.sigmoid(torch.exp(mu) + random))
         else:
-            return Categorical(torch.softmax(mu + random, -1))
+            return Categorical(torch.softmax(torch.exp(mu) + random, -1))
 
     def _get_prop_dim(self, subspace, prop):
         """Determines the appropriate dimension for a UDS property"""
@@ -119,7 +119,6 @@ class Likelihood(Module, metaclass=ABCMeta):
 
         return loss
 
-    @abstractmethod
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
@@ -142,7 +141,6 @@ class Likelihood(Module, metaclass=ABCMeta):
                         # select last category in the categorical distribution
                         if value is None:
                             value = mu.shape[-1] - 1
-
                         # Obtain category index for string-valued annotations
                         elif isinstance(value, str):
                             value = self.str_to_category[value]
@@ -154,7 +152,11 @@ class Likelihood(Module, metaclass=ABCMeta):
                         dist = self._get_distribution(mu, random)
 
                         # Compute log likelihood
-                        likelihood = dist.log_prob(torch.FloatTensor([value]))
+                        ll = dist.log_prob(torch.FloatTensor([value]))
+                        
+                        # Clamp to prevent underflow
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
+                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -170,9 +172,9 @@ class Likelihood(Module, metaclass=ABCMeta):
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf * likelihood
+                            likelihoods[p] += ridit_conf * ll
                         else:
-                            likelihoods[p] = ridit_conf * likelihood
+                            likelihoods[p] = ridit_conf * ll
         return likelihoods
 
 
@@ -273,13 +275,17 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                         dist = self._get_distribution(mu, random)
 
                         # Compute log likelihood
-                        likelihood = dist.log_prob(torch.FloatTensor([value]))
+                        ll = dist.log_prob(torch.FloatTensor([value]))
+
+                        # Clamp to prevent underflow
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
+                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf * likelihood
+                            likelihoods[p] += ridit_conf * ll
                         else:
-                            likelihoods[p] = ridit_conf * likelihood
+                            likelihoods[p] = ridit_conf * ll
         return likelihoods
 
 
@@ -381,8 +387,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             if any([r < 0 for r in rels]):
                 continue
             random = self.random_effects["time"][a]
-            # likelihood = MultivariateNormal(mu + random, cov).log_prob(
-            #     torch.Tensor(rels)
-            # )
-            # likelihoods["time"] += temp_rel_confs[a] * likelihood
+            likelihood = MultivariateNormal(mu + random, cov).log_prob(
+                torch.Tensor(rels)
+            )
+            likelihoods["time"] += temp_rel_confs[a] * likelihood
         return likelihoods

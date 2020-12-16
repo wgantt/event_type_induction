@@ -60,6 +60,9 @@ class EventTypeInductionModel(FreezableModule):
         self.random_seed = random_seed
         self.device = torch.device(device)
 
+        torch.manual_seed(random_seed)
+        np.random.seed(random_seed)
+
         # Number of iterations for which to run message passing
         self.bp_iters = bp_iters
 
@@ -106,7 +109,8 @@ class EventTypeInductionModel(FreezableModule):
         # We enforce that the only possible relation type for a relation
         # involving an entity participant is "no relation." This is
         # because a relation can obtain only between two *events*
-        # TODO: check that this is actually correct
+        # TODO: Correctly apply events-only constraint for relation types
+        #       Commenting out for now for debugging purposes
         # self.relation_probs[: self.n_entity_types, :, :-1] = NEG_INF  # = log(0)
         # self.relation_probs[: self.n_entity_types, :, -1] = 0  # = log(1)
         # self.relation_probs[:, : self.n_entity_types, :-1] = NEG_INF
@@ -321,17 +325,11 @@ class EventTypeInductionModel(FreezableModule):
                 var_node = list(fg.edges(lf_node))[0][1]
 
                 # Normalize beliefs + likelihood
-                belief = beliefs[var_node.label]
-                likelihood = lf_node.per_type_likelihood
-                # assert not (belief == np.ninf).any().item(), f"lf_node_name: {belief}"
-                # assert not (belief == np.inf).any().item(), f"lf_node_namee: {belief}"
-                # assert not (likelihood == np.ninf).any().item(), f"lf_node_name: {likelihood}"
-                # assert not (likelihood == np.inf).any().item(), f"lf_node_name: {likelihood}"
-                belief_norm = exp_normalize(belief)
-                likelihood_norm = exp_normalize(likelihood)
-                # print(var_node.label, belief_norm)
-                # print(lf_node_name, likelihood_norm)
-                ll += torch.logsumexp(belief_norm + likelihood_norm, 0)
+                belief = exp_normalize(beliefs[var_node.label])
+                likelihood = exp_normalize(lf_node.per_type_likelihood)
+                # if any(belief == -np.inf) or torch.isnan(belief).any():
+                    # print(var_node.label, beliefs[var_node.label], belief)
+                ll += torch.logsumexp(belief + likelihood, 0)
 
         return -ll
 
