@@ -162,7 +162,8 @@ class VariableNode(Node):
 
         # Initialize this node's belief with the message of the
         # first incoming factor
-        belief = self.graph[n][self]["object"].get_message(n, self)
+        belief = torch.zeros(self.ntypes)
+        belief += self.graph[n][self]["object"].get_message(n, self)
 
         # Multiply (=add log) values of all other incoming messages
         for n in neighbors:
@@ -361,7 +362,7 @@ class PriorFactorNode(FactorNode):
             ]
             msg = logsumexp(outgoing_msg, marginalize_dims)
         else:
-            msg = logsumexp(outgoing_msg, 0)
+            msg = outgoing_msg
 
         return normalize_message(msg)
 

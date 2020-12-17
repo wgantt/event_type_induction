@@ -3,6 +3,7 @@ import networkx as nx
 import unittest
 
 from event_type_induction.modules.factor_graph import *
+from event_type_induction.utils import exp_normalize
 
 
 class TestFactorGraph(unittest.TestCase):
@@ -43,7 +44,45 @@ class TestFactorGraph(unittest.TestCase):
 
         return fg, v1, v2, pf1
 
-    def four_variable_setup(self):
+    def three_variable_dimension_mismatch_setup(self):
+        fg = FactorGraph()
+
+        # Initialize variable nodes
+        e1 = VariableNode("e1", VariableType.EVENT, 2)
+        e2 = VariableNode("e2", VariableType.EVENT, 2)
+        r1 = VariableNode("r1", VariableType.RELATION, 3)
+        fg.set_node(e1)
+        fg.set_node(e2)
+        fg.set_node(r1)
+
+        # Initialize single prior factor node
+        pf_factor = -torch.FloatTensor([i+j+k for i in range(4) for j in range(4) for k in range(3)])
+        pf_factor = pf_factor.reshape((4,4,3))
+        pf = PriorFactorNode("pf", pf_factor, VariableType.RELATION)
+        fg.set_node(pf)
+        fg.set_edge(e1, pf, 0)
+        fg.set_edge(e2, pf, 1)
+        fg.set_edge(r1, pf, 2)
+
+        # Verify that appropriate edge types are created
+        assert isinstance(fg[e1][pf]["object"], DimensionMismatchEdge)
+        assert isinstance(fg[e2][pf]["object"], DimensionMismatchEdge)
+        assert not isinstance(fg[r1][pf]["object"], DimensionMismatchEdge)
+        
+        # Verify that they are initialized with the appropriate messages
+        e1_pf = fg[e1][pf]["object"]
+        e2_pf = fg[e2][pf]["object"]
+        contracted_msg_init = torch.zeros(2)
+        expanded_msg_init = torch.zeros(4)
+        expanded_msg_init[2:] = NEG_INF
+        assert torch.equal(e1_pf.get_message(pf,e1), contracted_msg_init)
+        assert torch.equal(e2_pf.get_message(pf,e2), contracted_msg_init)
+        assert torch.equal(e1_pf.get_message(e1,pf), expanded_msg_init)
+        assert torch.equal(e2_pf.get_message(e2,pf), expanded_msg_init)
+
+        return fg, e1, e2, r1, pf
+
+    def four_variable_setup(self, cyclic=False):
         """Four-variable linear chain (no likelihood factors)"""
         fg = FactorGraph()
 
@@ -74,7 +113,16 @@ class TestFactorGraph(unittest.TestCase):
         fg.set_edge(v3, pf3, 0)
         fg.set_edge(pf3, v4, 1)
 
-        return fg, v1, v2, v3, v4, pf1, pf2, pf3
+        # Connect V1 and V4 to create a cycle
+        if cyclic:
+            dist_fd = torch.log(torch.Tensor([[0.3, 0.4], [0.3, 0.0]]))
+            pf4 = PriorFactorNode("pf4", dist_fd, VariableType.EVENT)
+            fg.set_node(pf4)
+            fg.set_edge(v4, pf4, 0)
+            fg.set_edge(pf4, v1, 1)
+            return fg, v1, v2, v3, v4, pf1, pf2, pf3, pf4
+        else:
+            return fg, v1, v2, v3, v4, pf1, pf2, pf3
 
     def test_sum_product_one_variable_node(self):
 
@@ -84,8 +132,8 @@ class TestFactorGraph(unittest.TestCase):
         # should simply be the log of summed exponentials of the
         # elements in the prior factor.
         actual_message = pf1.sum_product(v1)
-        expected_message = normalize_message(torch.logsumexp(pf1.factor, 0))
-        assert actual_message == expected_message
+        expected_message = pf1.factor
+        assert torch.equal(actual_message, expected_message)
 
         # Try sum-product in the other direction. Since the messages at
         # the variable nodes are initialized with zeros, a zero tensor
@@ -98,17 +146,17 @@ class TestFactorGraph(unittest.TestCase):
         # the messages on the edges
         beliefs = fg.loopy_sum_product(1, [v1], [pf1, v1])
         assert len(beliefs) == 1
-        assert beliefs["v1"] == normalize_message(torch.logsumexp(pf1.factor, 0))
+        assert torch.equal(beliefs["v1"], pf1.factor)
 
         # Run for several iterations; results should not change
         beliefs = fg.loopy_sum_product(5, [v1], [pf1, v1])
         assert len(beliefs) == 1
-        assert beliefs["v1"] == normalize_message(torch.logsumexp(pf1.factor, 0))
+        assert torch.equal(beliefs["v1"], pf1.factor)
 
         # Switching the schedule shouldn't change the result
         belifs = fg.loopy_sum_product(5, [v1], [v1, pf1])
         assert len(beliefs) == 1
-        assert beliefs["v1"] == normalize_message(torch.logsumexp(pf1.factor, 0))
+        assert torch.equal(beliefs["v1"], pf1.factor)
 
     def test_sum_product_two_variable_nodes(self):
         fg, v1, v2, pf1 = self.two_variable_setup()
@@ -132,7 +180,7 @@ class TestFactorGraph(unittest.TestCase):
         ), f"expected {expected_v2_beliefs} but got {beliefs['v2']}"
 
     def test_sum_product_four_variable_nodes(self):
-        fg, v1, v2, v3, v4, pf1, pf2, pf3 = self.four_variable_setup()
+        fg, v1, v2, v3, v4, pf1, pf2, pf3 = self.four_variable_setup(cyclic=False)
 
         query_nodes = v1, v2, v3, v4
         forward_schedule = [v1, pf1, v2, pf2, v3, pf3, v4]
@@ -156,5 +204,35 @@ class TestFactorGraph(unittest.TestCase):
             torch.FloatTensor([0.7447, 0.2553]),
             torch.FloatTensor([0.5745, 0.4255]),
         ]
+        for a, e in zip(actual_beliefs, expected_beliefs):
+            assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
+
+    def test_sum_product_four_variable_nodes_with_cycle(self):
+        fg, v1, v2, v3, v4, pf1, pf2, pf3, pf4 = self.four_variable_setup(cyclic=True)
+
+        query_nodes = v1, v2, v3, v4
+        schedule = [v1, pf1, v2, pf2, v3, pf3, v4, pf4]
+
+        actual_beliefs = fg.loopy_sum_product(20, query_nodes, schedule)
+        actual_beliefs = [torch.exp(exp_normalize(b)) for b in actual_beliefs.values()]
+
+        # Since all factors are identical and since the graph is a ring,
+        # all the the beliefs are the same
+        expected_beliefs = [torch.Tensor([0.6987, 0.3013]) for _ in range(len(actual_beliefs))]
+        for a, e in zip(actual_beliefs, expected_beliefs):
+            assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
+
+    def test_dimension_mismatch_edge(self):
+        fg, e1, e2, r1, pf = self.three_variable_dimension_mismatch_setup()
+
+        query_nodes = e1, e2, r1
+        schedule = [e1, e2, r1, pf]
+
+        actual_beliefs = fg.loopy_sum_product(20, query_nodes, schedule)
+        actual_beliefs = [torch.exp(exp_normalize(b)) for b in actual_beliefs.values()]
+        e1_expected = torch.Tensor([0.7311, 0.2689])
+        e2_expected = torch.Tensor([0.7311, 0.2689])
+        r1_expected = torch.Tensor([0.6652, 0.2447, 0.0900])
+        expected_beliefs = [e1_expected, e2_expected, r1_expected]
         for a, e in zip(actual_beliefs, expected_beliefs):
             assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
