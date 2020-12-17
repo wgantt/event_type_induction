@@ -1,12 +1,10 @@
-import numpy as np
 import torch
-
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from event_type_induction.constants import *
 from event_type_induction.utils import exp_normalize
 from overrides import overrides
-from torch import Tensor, randn
+from torch import Tensor, randn, log
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict, ParameterList
 from typing import Any, Dict, Set, Tuple
@@ -39,9 +37,9 @@ class Likelihood(Module, metaclass=ABCMeta):
     def _initialize_random_effects(self) -> ModuleDict:
         """Initialize annotator random effects for each property"""
         random_effects = defaultdict(ParameterDict)
-        for subspace in self.property_subspaces:
-            for annotator in self.metadata.annotators(subspace):
-                for p in self.metadata.properties(subspace):
+        for subspace in sorted(self.property_subspaces):
+            for annotator in sorted(self.metadata.annotators(subspace)):
+                for p in sorted(self.metadata.properties(subspace)):
 
                     # Determine property dimension
                     prop_dim = self._get_prop_dim(subspace, p)
@@ -153,7 +151,7 @@ class Likelihood(Module, metaclass=ABCMeta):
                         dist = self._get_distribution(mu, random)
                         ll = dist.log_prob(torch.FloatTensor([value]))
                         min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
+                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -248,8 +246,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                         # Annotation value has to be specially determined for protoroles
                         if subspace == "protoroles":
 
-                            # Annotator "confidence" actually determines whether the
-                            # property applies or not
+                            # Annotator "confidence" for protoroles actually
+                            # determines whether the property applies or not
                             if conf == 0:
                                 # Property doesn't apply; select last category
                                 value = mu.shape[-1] - 1
@@ -272,7 +270,7 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                         dist = self._get_distribution(mu, random)
                         ll = dist.log_prob(torch.FloatTensor([value]))
                         min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
+                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
@@ -295,9 +293,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
     @overrides
     def _initialize_random_effects(self) -> ModuleDict:
         random_effects = defaultdict(ParameterDict)
-        for subspace in self.property_subspaces - {"time"}:
-            for annotator in self.metadata.annotators(subspace):
-                for p in self.metadata.properties(subspace):
+        for subspace in sorted(self.property_subspaces - {"time"}):
+            for annotator in sorted(self.metadata.annotators(subspace)):
+                for p in sorted(self.metadata.properties(subspace)):
 
                     # Determine property dimension
                     prop_dim = self._get_prop_dim(subspace, p)
@@ -315,7 +313,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         # Each of the two start- and endpoints in temporal relations are
         # treated as separate properties, but we model them together as
         # a single 4-tuple property
-        for annotator in self.metadata.annotators("time"):
+        for annotator in sorted(self.metadata.annotators("time")):
             # TODO: maybe initialize with greater variance?
             random_effects["time"][annotator] = Parameter(torch.randn(4))
 
@@ -356,7 +354,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                         dist = self._get_distribution(mu, random)
                         ll = dist.log_prob(torch.FloatTensor([value]))
                         min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
+                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -394,7 +392,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # Normalize and clip. This is currently causing NaNs in the
             # random loss for reasons I don't yet understand
             min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-            ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
+            ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
             likelihoods["time"] += temp_rel_confs[a] * ll
 
         return likelihoods

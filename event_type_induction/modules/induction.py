@@ -59,7 +59,6 @@ class EventTypeInductionModel(FreezableModule):
         self.uds = uds
         self.random_seed = random_seed
         self.device = torch.device(device)
-
         torch.manual_seed(random_seed)
         np.random.seed(random_seed)
 
@@ -185,10 +184,10 @@ class EventTypeInductionModel(FreezableModule):
     def _initialize_params(self, uds, n_types, subspaces) -> ParameterDict:
         """Initialize mu parameters for properties of a set of subspaces"""
         mu_dict = {}
-        for subspace in subspaces:
-            for prop, prop_metadata in uds.metadata.sentence_metadata.metadata[
-                subspace
-            ].items():
+        for subspace in sorted(subspaces):
+            for prop, prop_metadata in sorted(
+                uds.metadata.sentence_metadata.metadata[subspace].items()
+            ):
                 prop_dim = self._get_prop_dim(subspace, prop)
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
                     (n_types, prop_dim)
@@ -214,13 +213,13 @@ class EventTypeInductionModel(FreezableModule):
         """Initialize parameters for document edge attributes"""
         mu_dict = {}
 
-        for subspace in RELATION_SUBSPACES:
+        for subspace in sorted(RELATION_SUBSPACES):
             # temporal relations are handled specially below
             if subspace == "time":
                 continue
-            for prop, prop_metadata in self.uds.metadata.document_metadata.metadata[
-                subspace
-            ].items():
+            for prop, prop_metadata in sorted(
+                self.uds.metadata.document_metadata.metadata[subspace].items()
+            ):
                 prop_dim = self._get_prop_dim(subspace, prop)
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
                     (self.n_relation_types, prop_dim)

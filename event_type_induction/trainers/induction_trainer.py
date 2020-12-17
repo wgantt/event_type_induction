@@ -52,7 +52,8 @@ class EventTypeInductionTrainer:
                 n_entity_types,
                 bp_iters,
                 uds,
-                device=device,
+                device=self.device,
+                random_seed=self.random_seed,
             )
         else:
             self.model = model
