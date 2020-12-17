@@ -7,6 +7,7 @@ from scripts.setup_logging import setup_logging
 
 LOG = setup_logging()
 
+
 def main(args):
     # Just testing for now
     n_event_types = 2

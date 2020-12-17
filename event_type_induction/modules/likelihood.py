@@ -4,6 +4,7 @@ import torch
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from event_type_induction.constants import *
+from event_type_induction.utils import exp_normalize
 from overrides import overrides
 from torch import Tensor, randn
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
@@ -148,13 +149,9 @@ class Likelihood(Module, metaclass=ABCMeta):
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[prop_name][annotator]
 
-                        # Get the appropriate distribution
+                        # Compute log likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-
-                        # Compute log likelihood
                         ll = dist.log_prob(torch.FloatTensor([value]))
-                        
-                        # Clamp to prevent underflow
                         min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
                         ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
 
@@ -271,13 +268,9 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[prop_name][annotator]
 
-                        # Get the appropriate distribution
+                        # Compute log likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-
-                        # Compute log likelihood
                         ll = dist.log_prob(torch.FloatTensor([value]))
-
-                        # Clamp to prevent underflow
                         min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
                         ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
 
@@ -359,11 +352,11 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                         # Grab the random intercept for the current annotator
                         random = self.random_effects[prop_name][annotator]
 
-                        # Get the appropriate distribution
+                        # Compute log-likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-
-                        # Compute log likelihood
-                        likelihood = dist.log_prob(torch.FloatTensor([value]))
+                        ll = dist.log_prob(torch.FloatTensor([value]))
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
+                        ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -371,9 +364,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
-                            likelihoods[p] += ridit_conf * likelihood
+                            likelihoods[p] += ridit_conf * ll
                         else:
-                            likelihoods[p] = ridit_conf * likelihood
+                            likelihoods[p] = ridit_conf * ll
 
         # Can only compute the likelihood for temporal relations once
         # we have all four start- and endpoints for each annotator.
@@ -386,9 +379,22 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # be fixed in the annotations themselves)
             if any([r < 0 for r in rels]):
                 continue
+
+            # Manually compute unnormalized log likelihood.
+            # Seemingly can't use MultivariateNormal.log_prob b/c
+            # it leads to singular matrix errors during backprop
             random = self.random_effects["time"][a]
-            likelihood = MultivariateNormal(mu + random, cov).log_prob(
-                torch.Tensor(rels)
-            )
-            likelihoods["time"] += temp_rel_confs[a] * likelihood
+            invcov = torch.inverse(cov)
+            x_minus_mu = torch.FloatTensor(rels) - (mu + random)
+            ll = -torch.matmul(
+                torch.matmul(x_minus_mu.unsqueeze(1), invcov),
+                torch.transpose(x_minus_mu.unsqueeze(1), 1, 2),
+            ).squeeze()
+
+            # Normalize and clip. This is currently causing NaNs in the
+            # random loss for reasons I don't yet understand
+            min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
+            ll = torch.where(ll > np.log(MIN_LIKELIHOOD), ll, min_ll)
+            likelihoods["time"] += temp_rel_confs[a] * ll
+
         return likelihoods

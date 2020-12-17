@@ -30,7 +30,7 @@ from decomp.semantics.uds import UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict
 from torch.nn.functional import softmax
-from torch.distributions import Categorical, Bernoulli, MultivariateNormal, Uniform
+from torch.distributions import Categorical, Bernoulli, Uniform
 from typing import Dict, Tuple
 
 
@@ -327,8 +327,6 @@ class EventTypeInductionModel(FreezableModule):
                 # Normalize beliefs + likelihood
                 belief = exp_normalize(beliefs[var_node.label])
                 likelihood = exp_normalize(lf_node.per_type_likelihood)
-                # if any(belief == -np.inf) or torch.isnan(belief).any():
-                    # print(var_node.label, beliefs[var_node.label], belief)
                 ll += torch.logsumexp(belief + likelihood, 0)
 
         return -ll
