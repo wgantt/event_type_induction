@@ -56,8 +56,10 @@ class TestFactorGraph(unittest.TestCase):
         fg.set_node(r1)
 
         # Initialize single prior factor node
-        pf_factor = -torch.FloatTensor([i+j+k for i in range(4) for j in range(4) for k in range(3)])
-        pf_factor = pf_factor.reshape((4,4,3))
+        pf_factor = -torch.FloatTensor(
+            [i + j + k for i in range(4) for j in range(4) for k in range(3)]
+        )
+        pf_factor = pf_factor.reshape((4, 4, 3))
         pf = PriorFactorNode("pf", pf_factor, VariableType.RELATION)
         fg.set_node(pf)
         fg.set_edge(e1, pf, 0)
@@ -68,17 +70,17 @@ class TestFactorGraph(unittest.TestCase):
         assert isinstance(fg[e1][pf]["object"], DimensionMismatchEdge)
         assert isinstance(fg[e2][pf]["object"], DimensionMismatchEdge)
         assert not isinstance(fg[r1][pf]["object"], DimensionMismatchEdge)
-        
+
         # Verify that they are initialized with the appropriate messages
         e1_pf = fg[e1][pf]["object"]
         e2_pf = fg[e2][pf]["object"]
         contracted_msg_init = torch.zeros(2)
         expanded_msg_init = torch.zeros(4)
         expanded_msg_init[2:] = NEG_INF
-        assert torch.equal(e1_pf.get_message(pf,e1), contracted_msg_init)
-        assert torch.equal(e2_pf.get_message(pf,e2), contracted_msg_init)
-        assert torch.equal(e1_pf.get_message(e1,pf), expanded_msg_init)
-        assert torch.equal(e2_pf.get_message(e2,pf), expanded_msg_init)
+        assert torch.equal(e1_pf.get_message(pf, e1), contracted_msg_init)
+        assert torch.equal(e2_pf.get_message(pf, e2), contracted_msg_init)
+        assert torch.equal(e1_pf.get_message(e1, pf), expanded_msg_init)
+        assert torch.equal(e2_pf.get_message(e2, pf), expanded_msg_init)
 
         return fg, e1, e2, r1, pf
 
@@ -218,7 +220,9 @@ class TestFactorGraph(unittest.TestCase):
 
         # Since all factors are identical and since the graph is a ring,
         # all the the beliefs are the same
-        expected_beliefs = [torch.Tensor([0.6987, 0.3013]) for _ in range(len(actual_beliefs))]
+        expected_beliefs = [
+            torch.Tensor([0.6987, 0.3013]) for _ in range(len(actual_beliefs))
+        ]
         for a, e in zip(actual_beliefs, expected_beliefs):
             assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
 

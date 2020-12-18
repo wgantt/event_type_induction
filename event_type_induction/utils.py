@@ -1,3 +1,4 @@
+import inspect
 import numpy as np
 import os
 import torch
@@ -7,6 +8,7 @@ from decomp import UDSCorpus, RawUDSAnnotation
 from enum import Enum
 from event_type_induction.constants import *
 from glob import glob
+from itertools import product
 from pkg_resources import resource_filename
 from typing import Any, Dict, Generator, Iterable, Set, Tuple
 

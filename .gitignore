@@ -1,0 +1,3 @@
+scripts/logs/*
+*.swp
+*__pycache__

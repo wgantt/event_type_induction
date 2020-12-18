@@ -141,16 +141,24 @@ class EventTypeInductionModel(FreezableModule):
 
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
-            pred_node_annotator_confidence, self.uds.metadata.sentence_metadata
+            pred_node_annotator_confidence,
+            self.uds.metadata.sentence_metadata,
+            self.device,
         )
         self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
-            arg_node_annotator_confidence, self.uds.metadata.sentence_metadata
+            arg_node_annotator_confidence,
+            self.uds.metadata.sentence_metadata,
+            self.device,
         )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
-            sem_edge_annotator_confidence, self.uds.metadata.sentence_metadata
+            sem_edge_annotator_confidence,
+            self.uds.metadata.sentence_metadata,
+            self.device,
         )
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
-            doc_edge_annotator_confidence, self.uds.metadata.document_metadata
+            doc_edge_annotator_confidence,
+            self.uds.metadata.document_metadata,
+            self.device,
         )
 
     def _get_prop_dim(self, subspace, prop):
@@ -313,7 +321,7 @@ class EventTypeInductionModel(FreezableModule):
             A dictionary containing the beliefs (marginals) for each variable
             node
         """
-        ll = torch.FloatTensor([0])
+        ll = torch.FloatTensor([0]).to(self.device)
         for lf_node_name, lf_node in fg.likelihood_factor_nodes.items():
             # Only compute likelihoods over nodes that actually have
             # annotations
@@ -340,7 +348,7 @@ class EventTypeInductionModel(FreezableModule):
         ]
         return torch.sum(torch.FloatTensor([ll.random_loss() for ll in likelihoods]))[
             None
-        ]
+        ].to(self.device)
 
     def construct_factor_graph(self, document: UDSDocumentGraph) -> FactorGraph:
         """Construct the factor graph for a document
@@ -349,14 +357,10 @@ class EventTypeInductionModel(FreezableModule):
         ----------
         document
             The UDSDocumentGraph for which to construct the factor graph
-
-        TODO:
-            - Verify that variable nodes are added only for nodes or edges
-              that are actually annotated
         """
 
         # Initialize the factor graph
-        fg = FactorGraph()
+        fg = FactorGraph(device=self.device)
 
         # Get the sentence graphs contained in the document
         sentences = list(document.sentence_ids)
@@ -585,6 +589,6 @@ class EventTypeInductionModel(FreezableModule):
     def forward(self, document: decomp.semantics.uds.UDSDocument) -> torch.FloatTensor:
         fg = self.construct_factor_graph(document)
         beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
-        fixed_loss = torch.FloatTensor(self.compute_annotation_likelihood(fg, beliefs))
-        random_loss = torch.FloatTensor(self.random_loss())
+        fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
+        random_loss = self.random_loss()
         return fixed_loss, random_loss

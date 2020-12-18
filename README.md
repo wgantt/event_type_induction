@@ -3,10 +3,12 @@
 This package contains code for a generative event type induction model over
 the Universal Decompositional Semantics corpus.
 
-## Usage
+## Training
 
-Training, evaluation, and debugging is done through scripts in the `scripts`
-directory, and the way that module imports are structured assumes this setup.
-Scripts must be run from the root (i.e. `code`) directory. To run, enter:
+Currently, scripts are provided only for training the clustering model. To
+run training, execute the following from the root package directory:
 
-```python -m scripts.{script_name} [parameters]```
+```python -m scripts.train [--parameters /path/to/parameters/file]```
+
+If the --parameters argument is omitted, the script will use the provided
+parameters file (`scripts/train.json`).

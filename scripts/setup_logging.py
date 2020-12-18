@@ -16,6 +16,13 @@ def setup_logging():
         logpath = os.path.join(logdir, "{}_{}.log".format(main_body, timestr))
         handlers.append(logging.FileHandler(logpath))
 
+    # This is needed to get around fact that UDS creates
+    # its own log file, which will preventa the one created
+    # created above from actually being written to. There's
+    # probably a smarter way to do this though...
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",

@@ -162,7 +162,7 @@ class VariableNode(Node):
 
         # Initialize this node's belief with the message of the
         # first incoming factor
-        belief = torch.zeros(self.ntypes)
+        belief = torch.zeros(self.ntypes).to(self.device)
         belief += self.graph[n][self]["object"].get_message(n, self)
 
         # Multiply (=add log) values of all other incoming messages
@@ -178,7 +178,7 @@ class VariableNode(Node):
     def sum_product(self, target_node: "FactorNode") -> Tensor:
         """Sum-product (belief-propagation) message passing"""
 
-        msg = torch.zeros(self.ntypes)
+        msg = torch.zeros(self.ntypes).to(self.device)
 
         # Unless this node is observed, we have to multiply
         # in (= add the log of) all incoming messages
@@ -268,7 +268,7 @@ class LikelihoodFactorNode(FactorNode):
         # this case is 1, so we return a tensor of log(1) == 0 values.
         if len(likelihoods) == 0:
             self.per_type_likelihood = None
-            return torch.zeros(target_node.ntypes)
+            return torch.zeros(target_node.ntypes).to(self.device)
 
         # Sum the per-property log likelihoods to obtain overall,
         # per-type likelihoods (with dimension equal to the number
@@ -325,7 +325,7 @@ class PriorFactorNode(FactorNode):
         """
         # Initialize the message as the factor's tensor (have to add
         # tensor of zeros to avoid in-place operations with a leaf variable)
-        outgoing_msg = torch.zeros(self.factor.shape) + self.factor
+        outgoing_msg = torch.zeros(self.factor.shape).to(self.device) + self.factor
 
         # For each incoming message (from a variable node),
         # add the message to the tensor along the appropriate
@@ -336,7 +336,7 @@ class PriorFactorNode(FactorNode):
             edge = self.graph[n][self]["object"]
 
             # Get the incoming message
-            incoming_msg = edge.get_message(n, self)
+            incoming_msg = edge.get_message(n, self).to(self.device)
 
             # Reshape appropriately so that it can be
             # added to the outgoing message. May want to
@@ -375,14 +375,14 @@ class PriorFactorNode(FactorNode):
         self.record[target_node] = {}
 
         # Initialize the outgoing message
-        outgoing_msg = torch.zeros(self.factor.shape) + self.factor
+        outgoing_msg = (torch.zeros(self.factor.shape) + self.factor).to(self.device)
 
         # Loop over incoming neighbors is the same as in sum-product
         for n in self.neighbors(target_node):
 
             # Get message
             edge = self.graph[n][self]["object"]
-            incoming_msg = edge.get_message(n, self)
+            incoming_msg = edge.get_message(n, self).to(self.device)
 
             # Reshape
             broadcast_shape = [1] * len(self.factor.shape)
@@ -544,13 +544,14 @@ class DimensionMismatchEdge(Edge):
 class FactorGraph(nx.Graph):
     """Class for factor graphs"""
 
-    def __init__(self):
+    def __init__(self, device="cpu"):
         """Initialize a factor graph."""
         super().__init__(self, name="Factor Graph")
         self._variable_nodes = {}
         self._factor_nodes = {}
         self._likelihood_factor_nodes = {}
         self._prior_factor_nodes = {}
+        self.device = torch.device(device)
 
     @staticmethod
     def get_node_name(ntype: str, *args: Tuple[str]) -> str:
@@ -579,6 +580,7 @@ class FactorGraph(nx.Graph):
             The node to be added
         """
         node.graph = self
+        node.device = self.device
         if node.type == NodeType.VARIABLE:
             self.variable_nodes[node.label] = node
         elif node.type == NodeType.FACTOR:

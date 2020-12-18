@@ -4,7 +4,7 @@ from collections import defaultdict
 from event_type_induction.constants import *
 from event_type_induction.utils import exp_normalize
 from overrides import overrides
-from torch import Tensor, randn, log
+from torch import Tensor, FloatTensor, randn, log
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict, ParameterList
 from typing import Any, Dict, Set, Tuple
@@ -16,6 +16,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         property_subspaces: Set[str],
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
+        device: str = "cpu",
     ):
         """ABC for Event Type Induction Module likelihood computations
 
@@ -33,6 +34,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         self.property_subspaces = property_subspaces
         self.annotator_confidences = annotator_confidences
         self.metadata = metadata
+        self.device = torch.device(device)
 
     def _initialize_random_effects(self) -> ModuleDict:
         """Initialize annotator random effects for each property"""
@@ -89,7 +91,7 @@ class Likelihood(Module, metaclass=ABCMeta):
 
         Random effects terms are assumed to be distributed MV normal
         """
-        loss = torch.FloatTensor([0.0])
+        loss = FloatTensor([0.0])
 
         # Loss computed by property
         for prop, param_dict in self.random_effects.items():
@@ -149,9 +151,15 @@ class Likelihood(Module, metaclass=ABCMeta):
 
                         # Compute log likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-                        ll = dist.log_prob(torch.FloatTensor([value]))
-                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
+                        ll = dist.log_prob(FloatTensor([value]).to(self.device))
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
+                            self.device
+                        )
+                        ll = torch.where(
+                            ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)),
+                            ll,
+                            min_ll,
+                        )
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -179,8 +187,11 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         self,
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
+        device: str = "cpu",
     ):
-        super().__init__(PREDICATE_NODE_SUBSPACES, annotator_confidences, metadata)
+        super().__init__(
+            PREDICATE_NODE_SUBSPACES, annotator_confidences, metadata, device=device
+        )
         self._initialize_random_effects()
         self.str_to_category = {
             cat: idx
@@ -200,8 +211,11 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         self,
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
+        device: str = "cpu",
     ):
-        super().__init__(ARGUMENT_NODE_SUBSPACES, annotator_confidences, metadata)
+        super().__init__(
+            ARGUMENT_NODE_SUBSPACES, annotator_confidences, metadata, device=device
+        )
         self._initialize_random_effects()
 
     @overrides
@@ -217,8 +231,11 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
         self,
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
+        device: str = "cpu",
     ):
-        super().__init__(SEMANTICS_EDGE_SUBSPACES, annotator_confidences, metadata)
+        super().__init__(
+            SEMANTICS_EDGE_SUBSPACES, annotator_confidences, metadata, device=device
+        )
         self._initialize_random_effects()
 
     @overrides
@@ -268,9 +285,15 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
                         # Compute log likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-                        ll = dist.log_prob(torch.FloatTensor([value]))
-                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
+                        ll = dist.log_prob(FloatTensor([value]).to(self.device))
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
+                            self.device
+                        )
+                        ll = torch.where(
+                            ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)),
+                            ll,
+                            min_ll,
+                        )
 
                         # Add to likelihood-by-property
                         if p in likelihoods:
@@ -286,8 +309,11 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         self,
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
+        device: str = "cpu",
     ):
-        super().__init__(DOCUMENT_EDGE_SUBSPACES, annotator_confidences, metadata)
+        super().__init__(
+            DOCUMENT_EDGE_SUBSPACES, annotator_confidences, metadata, device=device
+        )
         self._initialize_random_effects()
 
     @overrides
@@ -352,9 +378,15 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
                         # Compute log-likelihood (clipping to prevent underflow)
                         dist = self._get_distribution(mu, random)
-                        ll = dist.log_prob(torch.FloatTensor([value]))
-                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-                        ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
+                        ll = dist.log_prob(FloatTensor([value]).to(self.device))
+                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
+                            self.device
+                        )
+                        ll = torch.where(
+                            ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)),
+                            ll,
+                            min_ll,
+                        )
 
                         # Get annotator confidence
                         conf = annotation[subspace][p]["confidence"][annotator]
@@ -370,7 +402,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         # we have all four start- and endpoints for each annotator.
         # We assume the endpoints are distrubted MV normal.
         mu = mus["time"]
-        likelihoods["time"] = torch.zeros(mu.shape[0])
+        likelihoods["time"] = torch.zeros(mu.shape[0]).to(self.device)
         for a, rels in temp_rels.items():
             # Handle annoying fact that some of the temporal relations
             # annotations have massively negative values (this needs to
@@ -383,7 +415,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # it leads to singular matrix errors during backprop
             random = self.random_effects["time"][a]
             invcov = torch.inverse(cov)
-            x_minus_mu = torch.FloatTensor(rels) - (mu + random)
+            x_minus_mu = FloatTensor(rels).to(self.device) - (mu + random)
             ll = -torch.matmul(
                 torch.matmul(x_minus_mu.unsqueeze(1), invcov),
                 torch.transpose(x_minus_mu.unsqueeze(1), 1, 2),
@@ -391,8 +423,10 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
             # Normalize and clip. This is currently causing NaNs in the
             # random loss for reasons I don't yet understand
-            min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD)
-            ll = torch.where(ll > log(Tensor([MIN_LIKELIHOOD])), ll, min_ll)
+            min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
+            ll = torch.where(
+                ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)), ll, min_ll
+            )
             likelihoods["time"] += temp_rel_confs[a] * ll
 
         return likelihoods

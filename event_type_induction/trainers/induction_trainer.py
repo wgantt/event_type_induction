@@ -23,9 +23,6 @@ class EventTypeInductionTrainer:
         bp_iters: int,
         uds: UDSCorpus,
         model=None,
-        batch_size=1,
-        lr=1e-3,
-        n_epochs=1,
         device: str = "cpu",
         random_seed=42,
     ):
@@ -35,9 +32,6 @@ class EventTypeInductionTrainer:
         self.n_entity_types = n_entity_types
         self.bp_iters = bp_iters
         self.uds = uds
-        self.batch_size = batch_size
-        self.lr = lr
-        self.n_epochs = n_epochs
         self.device = torch.device(device)
         self.random_seed = random_seed
 
@@ -58,10 +52,18 @@ class EventTypeInductionTrainer:
         else:
             self.model = model
 
-    # TODO: incorporate batch size
-    def fit(self, verbosity: int = 10):
+        self.model.to(self.device)
 
-        optimizer = Adam(self.model.parameters(), lr=self.lr)
+    def fit(
+        self,
+        batch_size: int = 1,
+        n_epochs: int = 10,
+        lr: float = 1e-3,
+        random_seed: int = 42,
+        verbosity: int = 10,
+    ):
+
+        optimizer = Adam(self.model.parameters(), lr=lr)
         batch_num = 0
 
         LOG.info("Adding UDS-EventStructure annotations")
@@ -69,25 +71,31 @@ class EventTypeInductionTrainer:
 
         documents_by_split = utils.get_documents_by_split(self.uds)
 
-        LOG.info(f"Beginning training for a maximum of {self.n_epochs} epochs.")
-        for epoch in range(10):
-            loss_trace = []
+        LOG.info(f"Beginning training for a maximum of {n_epochs} epochs.")
+        for epoch in range(n_epochs):
             fixed_trace = []
-            # Testing on a single document for now
+            random_trace = []
+            loss = torch.FloatTensor([0.0]).to(self.device)
             for doc in sorted(list(documents_by_split["train"]))[:1]:
 
                 # Forward
                 self.model.zero_grad()
                 fixed_loss, random_loss = self.model(self.uds.documents[doc])
-                LOG.info(fixed_loss)
-                loss = fixed_loss + random_loss
-                print(fixed_loss, random_loss)
-                loss_trace.append(fixed_loss + random_loss)
-                fixed_trace.append(fixed_loss)
+                loss += fixed_loss + random_loss
+                fixed_trace.append(fixed_loss.item())
+                random_trace.append(random_loss.item())
 
-                # Backward + optimizer step
-                print("calling backward!")
-                loss.backward()
-                optimizer.step()
+                # Backprop + optimizer step
+                batch_num += 1
+                if (batch_num % batch_size) == 0:
+                    loss.backward()
+                    optimizer.step()
+                    loss = torch.FloatTensor([0.0]).to(self.device)
+
+            epoch_fixed_loss = np.round(np.mean(fixed_trace), 3)
+            epoch_random_loss = np.round(np.mean(random_trace), 3)
+            LOG.info(
+                f"Epoch {epoch} mean loss: {epoch_fixed_loss} (fixed); {epoch_random_loss} (random)"
+            )
 
         return self.model.eval()
