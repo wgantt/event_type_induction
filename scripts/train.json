@@ -5,18 +5,18 @@
     "save_ckpts":true
   },
   "hyper":{
-    "n_event_types": [2],
-    "n_role_types": [3],
+    "n_event_types": [4],
+    "n_role_types": [4],
     "n_relation_types": [4],
-    "n_entity_types": [5],
-    "bp_iters": [5],
-    "device": ["cuda:0"]
+    "n_entity_types": [4],
+    "bp_iters": [10],
+    "device": ["cpu"],
+    "random_seed": [42]
   },
   "training":{
-    "n_epochs": [10],
+    "n_epochs": [5],
     "lr": [0.001],
     "verbosity": [10],
-    "batch_size": [1],
-    "random_seed": [42]
+    "batch_size": [540]
   }
 }

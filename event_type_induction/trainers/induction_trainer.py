@@ -7,7 +7,6 @@ import torch
 import numpy as np
 import random
 from decomp import UDSCorpus
-from torch.nn import NLLLoss
 from torch.optim import Adam
 
 LOG = setup_logging()
@@ -63,6 +62,7 @@ class EventTypeInductionTrainer:
         verbosity: int = 10,
     ):
 
+        # TODO: actually use verbosity parameter
         optimizer = Adam(self.model.parameters(), lr=lr)
         batch_num = 0
 
@@ -72,30 +72,52 @@ class EventTypeInductionTrainer:
         documents_by_split = utils.get_documents_by_split(self.uds)
 
         LOG.info(f"Beginning training for a maximum of {n_epochs} epochs.")
+        LOG.info(
+            f"Training on all {len(documents_by_split['train'])} documents in UDS train split."
+        )
         for epoch in range(n_epochs):
-            fixed_trace = []
-            random_trace = []
+
+            # Bookkeeping
+            batch_fixed_trace = []
+            batch_random_trace = []
+            epoch_fixed_trace = []
+            epoch_random_trace = []
             loss = torch.FloatTensor([0.0]).to(self.device)
-            for doc in sorted(list(documents_by_split["train"]))[:1]:
+            LOG.info(f"Starting epoch {epoch}")
+            for i, doc in enumerate(sorted(list(documents_by_split["train"]))):
 
                 # Forward
                 self.model.zero_grad()
                 fixed_loss, random_loss = self.model(self.uds.documents[doc])
                 loss += fixed_loss + random_loss
-                fixed_trace.append(fixed_loss.item())
-                random_trace.append(random_loss.item())
+                LOG.info(f"Fixed loss for document {i}: {fixed_loss.item()}")
+                batch_fixed_trace.append(fixed_loss.item())
+                batch_random_trace.append(random_loss.item())
+                epoch_fixed_trace.append(fixed_loss.item())
+                epoch_random_trace.append(random_loss.item())
 
                 # Backprop + optimizer step
-                batch_num += 1
-                if (batch_num % batch_size) == 0:
+                # Even though batch size is technically a parameter here, it
+                # should always match the training set size for EM purposes.
+                # It's a holdover from debugging that I should probably remove.
+                if ((i + 1) % batch_size) == 0:
+                    batch_fixed_loss = np.round(np.mean(batch_fixed_trace), 3)
+                    batch_random_loss = np.round(np.mean(batch_random_trace), 3)
+                    LOG.info(
+                        f"Batch {batch_num} mean loss: {batch_fixed_loss} (fixed); {batch_random_loss} (random)"
+                    )
                     loss.backward()
                     optimizer.step()
                     loss = torch.FloatTensor([0.0]).to(self.device)
+                    batch_fixed_trace = []
+                    batch_random_trace = []
+                    batch_num += 1
 
-            epoch_fixed_loss = np.round(np.mean(fixed_trace), 3)
-            epoch_random_loss = np.round(np.mean(random_trace), 3)
-            LOG.info(
-                f"Epoch {epoch} mean loss: {epoch_fixed_loss} (fixed); {epoch_random_loss} (random)"
-            )
+            epoch_fixed_loss = np.round(np.mean(epoch_fixed_trace), 3)
+            epoch_random_loss = np.round(np.mean(epoch_random_trace), 3)
+            epoch_mean_loss_str = f"Epoch {epoch} mean loss: {epoch_fixed_loss} (fixed); {epoch_random_loss} (random)"
+            LOG.info("-" * len(epoch_mean_loss_str))
+            LOG.info(epoch_mean_loss_str)
+            LOG.info("-" * len(epoch_mean_loss_str))
 
         return self.model.eval()

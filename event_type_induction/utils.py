@@ -318,6 +318,12 @@ def save_model_with_args(params, model, initargs, ckpt_dir, file_name):
 def load_model_with_args(cls, ckpt_path):
     ckpt_dict = torch.load(ckpt_path)
     hyper_params = ckpt_dict["curr_hyper"]
+
+    # Model has to be loaded with a UDSCorpus object
+    uds = UDSCorpus(version="2.0", annotation_format="raw")
+    load_event_structure_annotations(uds)
+    hyper_params["uds"] = uds
+
     model = cls(**hyper_params)
     model.load_state_dict(ckpt_dict["state_dict"])
     return model, hyper_params

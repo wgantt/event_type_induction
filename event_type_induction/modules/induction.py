@@ -24,24 +24,20 @@ from event_type_induction.constants import *
 
 # Package-external imports
 import torch
-import decomp
 import numpy as np
-from decomp.semantics.uds import UDSDocumentGraph
+from decomp import UDSCorpus
+from decomp.semantics.uds import UDSDocument, UDSDocumentGraph
 from collections import defaultdict
 from torch.nn import Parameter, ParameterDict
 from torch.nn.functional import softmax
-from torch.distributions import Categorical, Bernoulli, Uniform
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
+from scripts.setup_logging import setup_logging
+
+
+LOG = setup_logging()
 
 
 class EventTypeInductionModel(FreezableModule):
-    """Base module for event type induction
-
-    TODO
-        - Reduce graph size by filtering out semantics edges that don't
-          have annotations (?)
-    """
-
     def __init__(
         self,
         n_event_types: int,
@@ -49,20 +45,24 @@ class EventTypeInductionModel(FreezableModule):
         n_relation_types: int,
         n_entity_types: int,
         bp_iters: int,
-        uds: "UDSCorpus",
+        uds: "UDSCorpus" = None,
         device: str = "cpu",
         random_seed: int = 42,
     ):
-        super().__init__()
+        """Base module for event type induction"""
 
-        # Utilities
-        self.uds = uds
+        super().__init__()
         self.random_seed = random_seed
         self.device = torch.device(device)
         torch.manual_seed(random_seed)
         np.random.seed(random_seed)
 
-        # Number of iterations for which to run message passing
+        if uds is None:
+            self.uds = UDSCorpus(version="2.0", annotation_format="raw")
+        else:
+            self.uds = uds
+
+        # Number of iterations for which to run BP
         self.bp_iters = bp_iters
 
         # Initialize categorical distributions for the different types.
@@ -101,19 +101,19 @@ class EventTypeInductionModel(FreezableModule):
 
         # Relation types: separate distribution for each possible pairing
         # of participant types
-        self.relation_probs = clz._initialize_log_prob(
-            (self.n_participant_types, self.n_participant_types, self.n_relation_types)
+        relation_probs = clz._initialize_log_prob(
+            (self.n_participant_types, self.n_participant_types, self.n_relation_types),
+            as_parameter=False,
         )
 
         # We enforce that the only possible relation type for a relation
         # involving an entity participant is "no relation." This is
         # because a relation can obtain only between two *events*
-        # TODO: Correctly apply events-only constraint for relation types
-        #       Commenting out for now for debugging purposes
-        # self.relation_probs[: self.n_entity_types, :, :-1] = NEG_INF  # = log(0)
-        # self.relation_probs[: self.n_entity_types, :, -1] = 0  # = log(1)
-        # self.relation_probs[:, : self.n_entity_types, :-1] = NEG_INF
-        # self.relation_probs[:, : self.n_entity_types, -1] = 0
+        relation_probs[self.n_event_types :, :, :-1] = NEG_INF
+        relation_probs[self.n_event_types :, :, -1] = 0
+        relation_probs[:, self.n_event_types :, :-1] = NEG_INF
+        relation_probs[:, self.n_event_types :, -1] = 0
+        self.relation_probs = Parameter(relation_probs)
 
         # Initialize mus (expected annotations)
         self.event_mus = self._initialize_event_params()
@@ -128,10 +128,10 @@ class EventTypeInductionModel(FreezableModule):
             arg_node_annotators,
             sem_edge_annotators,
             doc_edge_annotators,
-        ) = load_annotator_ids(uds)
+        ) = load_annotator_ids(self.uds)
 
         # Load ridit-scored annotator confidence values
-        ridits = ridit_score_confidence(uds)
+        ridits = ridit_score_confidence(self.uds)
         pred_node_annotator_confidence = {
             a: ridits.get(a) for a in pred_node_annotators
         }
@@ -297,16 +297,22 @@ class EventTypeInductionModel(FreezableModule):
         }
 
     @staticmethod
-    def _initialize_log_prob(shape: Tuple[int]) -> Parameter:
+    def _initialize_log_prob(
+        shape: Tuple[int], as_parameter=True
+    ) -> Union[torch.Tensor, Parameter]:
         """Unit random normal-based initialization for model parameters
 
         The result is returned as log probabilitiess
         """
         if shape[-1] == 1:  # Bernoulli
-            val = Uniform(0, 1).sample((shape[0],))
+            val = torch.sigmoid(torch.randn((shape[0],)))
         else:
             val = softmax(torch.randn(shape), -1)
-        return Parameter(torch.log(val))
+
+        if as_parameter:
+            return Parameter(torch.log(val))
+        else:
+            return torch.log(val)
 
     def compute_annotation_likelihood(
         self, fg: FactorGraph, beliefs: Dict[str, torch.Tensor]
@@ -487,7 +493,8 @@ class EventTypeInductionModel(FreezableModule):
                     participant_probs = torch.cat(
                         [
                             self.event_probs + self.participant_domain_prob,
-                            self.entity_probs - self.participant_domain_prob,
+                            self.entity_probs
+                            + torch.log(1 - torch.exp(self.participant_domain_prob)),
                         ]
                     )
                     participant_type_pf_node = PriorFactorNode(
@@ -574,19 +581,20 @@ class EventTypeInductionModel(FreezableModule):
                     )
                 var_node = fg.variable_nodes.get(fg_node_name)
 
-                # Verify that the variable node was in fact created in
+                # Verify that the variable node was created in
                 # the sentence-level loop
-                assert (
-                    var_node is not None
-                ), f"Variable node {var_node_name} not found in factor graph; annotations: {doc_edge_anno}"
-
-                # Connect the variable node to the prior factor node for the
-                # document edge
-                fg.set_edge(var_node, relation_pf_node, factor_dim)
+                if var_node is None:
+                    LOG.warn(
+                        f"Variable node {var_node_name} not found in factor graph; annotations: {doc_edge_anno}"
+                    )
+                else:
+                    # Connect the variable node to the prior factor node for the
+                    # document edge
+                    fg.set_edge(var_node, relation_pf_node, factor_dim)
 
         return fg
 
-    def forward(self, document: decomp.semantics.uds.UDSDocument) -> torch.FloatTensor:
+    def forward(self, document: UDSDocument) -> torch.FloatTensor:
         fg = self.construct_factor_graph(document)
         beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
         fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
