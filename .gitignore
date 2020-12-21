@@ -1,3 +1,7 @@
 scripts/logs/*
 *.swp
 *__pycache__
+*.pyc
+build/
+dist/
+event_type_induction.egg-info/
