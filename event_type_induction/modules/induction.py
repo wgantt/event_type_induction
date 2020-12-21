@@ -388,6 +388,21 @@ class EventTypeInductionModel(FreezableModule):
                 else:
                     pred, arg = v2, v1
 
+                # Optimization: If there are no annotations on the predicate
+                # or argument nodes, or on the edge between them, we just omit
+                # them all from the factor graph. This considerably speeds up BP.
+                edge_subspaces = set(sem_edge_anno.keys()).intersection(
+                    SEMANTICS_EDGE_SUBSPACES
+                )
+                pred_subspaces = set(
+                    sentence.semantics_nodes[pred].keys()
+                ).intersection(PREDICATE_NODE_SUBSPACES)
+                arg_subspaces = set(sentence.semantics_nodes[arg].keys()).intersection(
+                    ARGUMENT_NODE_SUBSPACES
+                )
+                if not (edge_subspaces or pred_subspaces or arg_subspaces):
+                    continue
+
                 # VARIABLE NODES ------------------------------------
 
                 # Add a variable node for the predicate's event type,
@@ -431,7 +446,11 @@ class EventTypeInductionModel(FreezableModule):
                 # factor that computes the likelihood of the node's annotations.
                 pred_node_anno = sentence.predicate_nodes[pred]
                 pred_lf_node_name = FactorGraph.get_node_name("lf", pred)
-                if not pred_lf_node_name in fg.factor_nodes:
+                if not pred_subspaces:
+                    # Optimization: Do not add a likelihood
+                    # factor for predicates without annotations
+                    pass
+                elif not pred_lf_node_name in fg.factor_nodes:
                     pred_lf_node = LikelihoodFactorNode(
                         pred_lf_node_name,
                         self.pred_node_likelihood,
@@ -446,7 +465,11 @@ class EventTypeInductionModel(FreezableModule):
                 # Do the same for the argument.
                 arg_node_anno = sentence.argument_nodes[arg]
                 arg_lf_node_name = FactorGraph.get_node_name("lf", arg)
-                if not arg_lf_node_name in fg.factor_nodes:
+                if not arg_subspaces:
+                    # Optimization: Do not add a likelihood
+                    # factor for arguments without annotations
+                    pass
+                elif not arg_lf_node_name in fg.factor_nodes:
                     arg_lf_node = LikelihoodFactorNode(
                         arg_lf_node_name,
                         self.arg_node_likelihood,
@@ -459,16 +482,17 @@ class EventTypeInductionModel(FreezableModule):
                     arg_lf_node = fg.factor_nodes[arg_lf_node_name]
 
                 # We also add a likelihood factor node for the semantics
-                # edge annotations. This is conditioned only on the
-                # argument's participant type
-                sem_edge_lf_node = LikelihoodFactorNode(
-                    FactorGraph.get_node_name("lf", v1, v2),
-                    self.semantics_edge_likelihood,
-                    self.role_mus,
-                    sem_edge_anno,
-                )
-                fg.set_node(sem_edge_lf_node)
-                fg.set_edge(sem_edge_lf_node, role_v_node, 0)
+                # edge annotations (only if they exist). This is
+                # conditioned only on the argument's participant type
+                if edge_subspaces:
+                    sem_edge_lf_node = LikelihoodFactorNode(
+                        FactorGraph.get_node_name("lf", v1, v2),
+                        self.semantics_edge_likelihood,
+                        self.role_mus,
+                        sem_edge_anno,
+                    )
+                    fg.set_node(sem_edge_lf_node)
+                    fg.set_edge(sem_edge_lf_node, role_v_node, 0)
 
                 # PRIOR FACTOR NODES --------------------------------
 
@@ -601,7 +625,9 @@ class EventTypeInductionModel(FreezableModule):
             start_time = time.time()
             fg = self.construct_factor_graph(document)
             fg_construction_time = time.time()
-            LOG.info(f"  Factor graph construction: {np.round(fg_construction_time - start_time, 3)}")
+            LOG.info(
+                f"  Factor graph construction: {np.round(fg_construction_time - start_time, 3)}"
+            )
             beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
             bp_time = time.time()
             LOG.info(f"  BP: {np.round(bp_time - fg_construction_time, 3)}")
