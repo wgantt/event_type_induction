@@ -60,11 +60,11 @@ class EventTypeInductionTrainer:
         lr: float = 1e-3,
         random_seed: int = 42,
         verbosity: int = 10,
+        time: bool = False,
     ):
 
         # TODO: actually use verbosity parameter
         optimizer = Adam(self.model.parameters(), lr=lr)
-        batch_num = 0
 
         LOG.info("Adding UDS-EventStructure annotations")
         utils.load_event_structure_annotations(self.uds)
@@ -82,24 +82,25 @@ class EventTypeInductionTrainer:
             batch_random_trace = []
             epoch_fixed_trace = []
             epoch_random_trace = []
+            batch_num = 0
             loss = torch.FloatTensor([0.0]).to(self.device)
             LOG.info(f"Starting epoch {epoch}")
             for i, doc in enumerate(sorted(list(documents_by_split["train"]))):
 
                 # Forward
                 self.model.zero_grad()
-                fixed_loss, random_loss = self.model(self.uds.documents[doc])
+                fixed_loss, random_loss = self.model(self.uds.documents[doc], time)
                 loss += fixed_loss + random_loss
-                LOG.info(f"Fixed loss for document {i}: {fixed_loss.item()}")
+                LOG.info(f"Fixed loss for document {i} ({doc}): {fixed_loss.item()}")
                 batch_fixed_trace.append(fixed_loss.item())
                 batch_random_trace.append(random_loss.item())
                 epoch_fixed_trace.append(fixed_loss.item())
                 epoch_random_trace.append(random_loss.item())
 
                 # Backprop + optimizer step
-                # Even though batch size is technically a parameter here, it
-                # should always match the training set size for EM purposes.
-                # It's a holdover from debugging that I should probably remove.
+                # In standard EM, we would obviously want batch size to equal
+                # the train set size, but this led to some training runs being
+                # killed, so a smaller batch size is required.
                 if ((i + 1) % batch_size) == 0:
                     batch_fixed_loss = np.round(np.mean(batch_fixed_trace), 3)
                     batch_random_loss = np.round(np.mean(batch_random_trace), 3)

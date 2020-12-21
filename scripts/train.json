@@ -9,14 +9,15 @@
     "n_role_types": [4],
     "n_relation_types": [4],
     "n_entity_types": [4],
-    "bp_iters": [10],
+    "bp_iters": [7],
     "device": ["cpu"],
     "random_seed": [42]
   },
   "training":{
-    "n_epochs": [5],
+    "n_epochs": [1],
     "lr": [0.001],
     "verbosity": [10],
-    "batch_size": [540]
+    "batch_size": [1],
+    "time": [false]
   }
 }

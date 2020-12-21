@@ -23,6 +23,7 @@ from event_type_induction.utils import (
 from event_type_induction.constants import *
 
 # Package-external imports
+import time
 import torch
 import numpy as np
 from decomp import UDSCorpus
@@ -594,9 +595,23 @@ class EventTypeInductionModel(FreezableModule):
 
         return fg
 
-    def forward(self, document: UDSDocument) -> torch.FloatTensor:
-        fg = self.construct_factor_graph(document)
-        beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
-        fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
-        random_loss = self.random_loss()
+    def forward(self, document: UDSDocument, time_run=False) -> torch.FloatTensor:
+        if time_run:
+            LOG.info(f"Runtime analysis for {document.name}:")
+            start_time = time.time()
+            fg = self.construct_factor_graph(document)
+            fg_construction_time = time.time()
+            LOG.info(f"  Factor graph construction: {np.round(fg_construction_time - start_time, 3)}")
+            beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
+            bp_time = time.time()
+            LOG.info(f"  BP: {np.round(bp_time - fg_construction_time, 3)}")
+            fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
+            random_loss = self.random_loss()
+            loss_calc_time = time.time()
+            LOG.info(f"  Loss calculation: {np.round(loss_calc_time - bp_time, 3)}")
+        else:
+            fg = self.construct_factor_graph(document)
+            beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
+            fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
+            random_loss = self.random_loss()
         return fixed_loss, random_loss
