@@ -271,6 +271,28 @@ def ridit_score_confidence(uds: UDSCorpus, split=None) -> Dict[str, Dict[int, fl
     }
 
 
+def get_prop_dim(metadata, subspace, prop):
+    """Determines the appropriate dimension for a UDS property"""
+    prop_data = metadata.metadata[subspace][prop].value
+    if prop_data.is_categorical:
+        n_categories = len(prop_data.categories)
+        # conditional categorical properties require an
+        # additional dimension for the "does not apply" case
+        if prop in CONDITIONAL_PROPERTIES:
+            return n_categories + 1
+        # non-conditional, ordinal categorical properties
+        if prop_data.is_ordered_categorical:
+            return n_categories
+        # non-conditional, binary categorical properties
+        else:
+            return n_categories - 1
+    # currently no non-categorical properties in UDS
+    else:
+        raise ValueError(
+            f"Non-categorical property {property} found in subspace {subspace}"
+        )
+
+
 def parameter_grid(param_dict: Dict[str, Any]):
     """Generator for training hyperparameter grid
 

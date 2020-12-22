@@ -15,6 +15,7 @@ setup(
         "networkx==2.2.*",
         "numpy==1.16.*",
         "overrides==3.1.*",
+        "scikit-learn=0.23.*",
         "setuptools==41.0.*",
         "torch==1.4.*",
         "typing==3.7.*",
