@@ -37,6 +37,39 @@ def exp_normalize(t: torch.Tensor) -> torch.Tensor:
     return torch.log(t2 / t2.sum())
 
 
+def load_pred_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
+    # predicate nodoe subspaces: time, genericity, factuality, event_structure
+    pred_node_annotators = set()
+    for subspace in PREDICATE_NODE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        if subspace == "genericity":
+            # filter down to only predicate node genericity annotators
+            subspace_annotators = {a for a in subspace_annotators if "pred" in a}
+        pred_node_annotators = pred_node_annotators.union(subspace_annotators)
+    return pred_node_annotators
+
+def load_arg_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
+    # argument node subspaces: genericity, wordsense
+    arg_node_annotators = set()
+    for subspace in ARGUMENT_NODE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        if subspace == "genericity":
+            # filter down to only argument node genericity annotators
+            subspace_annotators = {a for a in subspace_annotators if "arg" in a}
+        arg_node_annotators = arg_node_annotators.union(subspace_annotators)
+    return arg_node_annotators
+
+def load_sem_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
+    # semantics edge subspaces: protoroles, distributivity
+    sem_edge_annotators = set()
+    for subspace in SEMANTICS_EDGE_SUBSPACES:
+        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
+        sem_edge_annotators = sem_edge_annotators.union(subspace_annotators)
+    return sem_edge_annotators
+
+def load_doc_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
+    return uds.metadata.document_metadata.annotators()
+
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
     """Fetch all of the annotator IDs from an annotated UDS corpus
 
@@ -47,31 +80,10 @@ def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
         be extracted
     """
 
-    # predicate nodoe subspaces: time, genericity, factuality, event_structure
-    pred_node_annotators = set()
-    for subspace in PREDICATE_NODE_SUBSPACES:
-        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
-        if subspace == "genericity":
-            # filter down to only predicate node genericity annotators
-            subspace_annotators = {a for a in subspace_annotators if "pred" in a}
-        pred_node_annotators = pred_node_annotators.union(subspace_annotators)
-
-    # argument node subspaces: genericity, wordsense
-    arg_node_annotators = set()
-    for subspace in ARGUMENT_NODE_SUBSPACES:
-        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
-        if subspace == "genericity":
-            # filter down to only argument node genericity annotators
-            subspace_annotators = {a for a in subspace_annotators if "arg" in a}
-        arg_node_annotators = arg_node_annotators.union(subspace_annotators)
-
-    # semantics edge subspaces: protoroles, distributivity
-    sem_edge_annotators = set()
-    for subspace in SEMANTICS_EDGE_SUBSPACES:
-        subspace_annotators = uds.metadata.sentence_metadata.annotators(subspace)
-        sem_edge_annotators = sem_edge_annotators.union(subspace_annotators)
-
-    doc_edge_annotators = uds.metadata.document_metadata.annotators()
+    pred_node_annotators = load_pred_node_annotator_ids(uds)
+    arg_node_annotators = load_arg_node_annotator_ids(uds)
+    sem_edge_annotators = load_sem_edge_annotator_ids(uds)
+    doc_edge_annotators = load_doc_edge_annotator_ids(uds)
 
     return (
         pred_node_annotators,
@@ -160,7 +172,7 @@ def get_allen_relation(
             return AllenRelation.E2_OVERLAPS_E1
 
 
-def ridit_score_confidence(uds: UDSCorpus, split=None) -> Dict[str, Dict[int, float]]:
+def ridit_score_confidence(uds: UDSCorpus, sents: Set[str] = None, docs: Set[str] = None) -> Dict[str, Dict[int, float]]:
     """Ridit score confidence values for each annotator
 
     TODO: generate ridit scores for all possible confidence values
@@ -170,8 +182,10 @@ def ridit_score_confidence(uds: UDSCorpus, split=None) -> Dict[str, Dict[int, fl
     ----------
     uds
         The UDSCorpus
-    split
-        The split of the UDSCorpus to perform the ridit scoring over
+    sents
+        The sentences to use for the ridit-scoring calculation
+    docs
+        The documents to use for the ridit-scoring calculation
     """
 
     def ridit(x: Iterable) -> Dict[int, float]:
@@ -206,17 +220,14 @@ def ridit_score_confidence(uds: UDSCorpus, split=None) -> Dict[str, Dict[int, fl
 
     # Determine sentence- and document-level graphs for the split
     # (There should really be a UDS function to do this)
-    if split is None:
-        # If no split, use the whole corpus
+    if sents is None:
         split_sentence_graphs = uds.graphs
+    else:
+        split_sentence_graphs = {name: uds[name] for name in uds if name in sents}
+    if docs is None:
         split_doc_graphs = uds.documents
     else:
-        split_sentence_graphs = {}
-        split_doc_graphs = {}
-        for name, graph in uds.graphs.items():
-            if split in name:
-                split_sentence_graphs[name] = graph
-                split_doc_graphs[graph.document_id] = uds.documents[graph.document_id]
+        split_doc_graphs = {name: uds.documents[name] for name in uds.documents if name in docs}
 
     # Semantics node and edge properties
     annotator_confidences = defaultdict(list)
