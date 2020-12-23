@@ -7,7 +7,7 @@ from overrides import overrides
 from torch import Tensor, FloatTensor, randn, log
 from torch.distributions import Bernoulli, Categorical, MultivariateNormal
 from torch.nn import Module, ModuleDict, Parameter, ParameterDict, ParameterList
-from typing import Any, Dict, Set, Tuple
+from typing import Any, Dict, Set, Tuple, Union
 
 
 class Likelihood(Module, metaclass=ABCMeta):
@@ -35,6 +35,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         self.annotator_confidences = annotator_confidences
         self.metadata = metadata
         self.device = torch.device(device)
+        self.to(device)
 
     def _initialize_random_effects(self) -> ModuleDict:
         """Initialize annotator random effects for each property"""
@@ -56,7 +57,7 @@ class Likelihood(Module, metaclass=ABCMeta):
                     # for easy
                     random_effects[prop_name][annotator] = random_shift
 
-        self.random_effects = ModuleDict(random_effects)
+        self.random_effects = ModuleDict(random_effects).to(self.device)
 
     def _get_distribution(self, mu, random):
         """Generates an appropriate distribution given a mean and random effect"""
@@ -91,7 +92,7 @@ class Likelihood(Module, metaclass=ABCMeta):
 
         Random effects terms are assumed to be distributed MV normal
         """
-        loss = FloatTensor([0.0])
+        loss = FloatTensor([0.0]).to(self.device)
 
         # Loss computed by property
         for prop, param_dict in self.random_effects.items():
@@ -122,9 +123,10 @@ class Likelihood(Module, metaclass=ABCMeta):
 
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
-    ) -> Dict[str, Tensor]:
+    ) -> Union[Dict[str, Tensor], Tensor]:
         """Compute the likelihood for a single annotation for a set of subspaces"""
         likelihoods = {}
+        total_ll = torch.FloatTensor([0.0]).to(self.device)
         for subspace in self.property_subspaces:
             if subspace in annotation:
                 for p in annotation[subspace]:
@@ -178,7 +180,9 @@ class Likelihood(Module, metaclass=ABCMeta):
                             likelihoods[p] += ridit_conf * ll
                         else:
                             likelihoods[p] = ridit_conf * ll
-        return likelihoods
+                    total_ll += torch.logsumexp(likelihoods[p], 0)
+
+        return likelihoods, total_ll
 
 
 class PredicateNodeAnnotationLikelihood(Likelihood):
@@ -241,9 +245,10 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
     @overrides
     def forward(
         self, mus: ParameterDict, annotation: Dict[str, Any]
-    ) -> Dict[str, Tensor]:
+    ) -> Union[Dict[str, Tensor], Tensor]:
         """Compute the likelihood for a single annotation for a set of subspaces"""
         likelihoods = {}
+        total_ll = torch.FloatTensor([0.0]).to(self.device)
         for subspace in self.property_subspaces:
             if subspace in annotation:
                 for p in annotation[subspace]:
@@ -300,7 +305,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
                             likelihoods[p] += ridit_conf * ll
                         else:
                             likelihoods[p] = ridit_conf * ll
-        return likelihoods
+                    total_ll += torch.logsumexp(likelihoods[p], 0)
+        return likelihoods, total_ll
 
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):
@@ -343,13 +349,14 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # TODO: maybe initialize with greater variance?
             random_effects["time"][annotator] = Parameter(torch.randn(4))
 
-        self.random_effects = ModuleDict(random_effects)
+        self.random_effects = ModuleDict(random_effects).to(self.device)
 
     @overrides
     def forward(
         self, mus: ParameterDict, cov: Parameter, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
         likelihoods = {}
+        total_ll = torch.FloatTensor([0.0])
         temp_rels = defaultdict(list)
         temp_rel_confs = defaultdict(int)
         for subspace in self.property_subspaces:
@@ -398,6 +405,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                         else:
                             likelihoods[p] = ridit_conf * ll
 
+                    if subspace != "time":
+                        total_ll += torch.logsumexp(likelihoods[p], 0)
+
         # Can only compute the likelihood for temporal relations once
         # we have all four start- and endpoints for each annotator.
         # We assume the endpoints are distrubted MV normal.
@@ -428,5 +438,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)), ll, min_ll
             )
             likelihoods["time"] += temp_rel_confs[a] * ll
+        # TODO: check whether this has the appropriate sign
+        total_ll += torch.logsumexp(likelihoods["time"], 0)
 
-        return likelihoods
+        return likelihoods, total_ll

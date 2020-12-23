@@ -48,6 +48,7 @@ def load_pred_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
         pred_node_annotators = pred_node_annotators.union(subspace_annotators)
     return pred_node_annotators
 
+
 def load_arg_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
     # argument node subspaces: genericity, wordsense
     arg_node_annotators = set()
@@ -59,6 +60,7 @@ def load_arg_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
         arg_node_annotators = arg_node_annotators.union(subspace_annotators)
     return arg_node_annotators
 
+
 def load_sem_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
     # semantics edge subspaces: protoroles, distributivity
     sem_edge_annotators = set()
@@ -67,8 +69,10 @@ def load_sem_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
         sem_edge_annotators = sem_edge_annotators.union(subspace_annotators)
     return sem_edge_annotators
 
+
 def load_doc_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
     return uds.metadata.document_metadata.annotators()
+
 
 def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
     """Fetch all of the annotator IDs from an annotated UDS corpus
@@ -172,7 +176,9 @@ def get_allen_relation(
             return AllenRelation.E2_OVERLAPS_E1
 
 
-def ridit_score_confidence(uds: UDSCorpus, sents: Set[str] = None, docs: Set[str] = None) -> Dict[str, Dict[int, float]]:
+def ridit_score_confidence(
+    uds: UDSCorpus, sents: Set[str] = None, docs: Set[str] = None
+) -> Dict[str, Dict[int, float]]:
     """Ridit score confidence values for each annotator
 
     TODO: generate ridit scores for all possible confidence values
@@ -227,7 +233,9 @@ def ridit_score_confidence(uds: UDSCorpus, sents: Set[str] = None, docs: Set[str
     if docs is None:
         split_doc_graphs = uds.documents
     else:
-        split_doc_graphs = {name: uds.documents[name] for name in uds.documents if name in docs}
+        split_doc_graphs = {
+            name: uds.documents[name] for name in uds.documents if name in docs
+        }
 
     # Semantics node and edge properties
     annotator_confidences = defaultdict(list)
