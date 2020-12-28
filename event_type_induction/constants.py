@@ -14,6 +14,8 @@ class Type(Enum):
     ROLE = 2
     RELATION = 3
 
+STR_TO_TYPE = {t.name: t for t in Type}
+
 
 N_CONFIDENCE_SCORES = 5
 
