@@ -41,18 +41,15 @@ class Likelihood(Module, metaclass=ABCMeta):
         """Initialize annotator random effects for each property"""
         random_effects = {}
         for subspace in sorted(self.property_subspaces):
+            subspace_annotators = self.metadata.annotators(subspace)
+            max_annotator_idx = max(
+                [int(s.split("-")[-1]) for s in subspace_annotators]
+            )
+            num_annotators = max(len(subspace_annotators), max_annotator_idx + 1)
             for p in sorted(self.metadata.properties(subspace)):
 
                 # Determine property dimension
                 prop_dim = self._get_prop_dim(subspace, p)
-
-                # Determine number of annotators
-                num_annotators = len(self.metadata.annotators(subspace))
-
-                # Hack for event-structure properties, where there are (oddly)
-                # skips in the annotatorr numbering that cause problems
-                if subspace == "event_structure":
-                    num_annotators += 4
 
                 # Single random intercept term per annotator per property
                 random_shift = Parameter(torch.randn(num_annotators, prop_dim))
@@ -125,7 +122,8 @@ class Likelihood(Module, metaclass=ABCMeta):
         annotations: Dict[str, torch.Tensor],
         annotators: Dict[str, torch.Tensor],
         confidences: Dict[str, torch.Tensor],
-        train_annotators: Dict[str, set] = None
+        train_annotators: Dict[str, torch.Tensor] = None,
+        dev_annotators_in_train: Dict[str, torch.Tensor] = None,
     ):
         """Compute the likelihood for a single annotation for a set of subspaces"""
         likelihoods = {}
@@ -139,13 +137,16 @@ class Likelihood(Module, metaclass=ABCMeta):
             confidence = confidences[p]
 
             # Grab the random intercept for the current annotator
-            if train_annotators:
+            if dev_annotators_in_train:
                 # If evaluating on dev, we don't have tuned random effects for
                 # annotators who weren't seen during training, so we use the
                 # mean random effect across train set annotators.
-                train_random_effects = self.random_effects[prop_name][list(train_annotators[p]), :]
+                train_random_effects = self.random_effects[prop_name][
+                    train_annotators[p], :
+                ]
                 mean_train_random_effect = train_random_effects.mean(0)
-                mean_train_random_effect = mean_train_random_effect.repeat(len(annotators[p]),1)
+                random = self.random_effects[prop_name][annotators[p], :]
+                random[~dev_annotators_in_train[p]] = mean_train_random_effect
             else:
                 random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
 
@@ -153,9 +154,7 @@ class Likelihood(Module, metaclass=ABCMeta):
             dist = self._get_distribution(mu, random)
             ll = dist.log_prob(anno).to(self.device)
             min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
-            ll = torch.where(
-                ll > min_ll, ll, min_ll,
-            )
+            ll = torch.where(ll > min_ll, ll, min_ll,)
 
             # Accumulate likelihood
             if p in likelihoods:
@@ -165,7 +164,7 @@ class Likelihood(Module, metaclass=ABCMeta):
                 likelihoods[p] = confidence * ll
                 total_ll = likelihoods[p]
 
-        total_ll = torch.logsumexp(torch.sum(total_ll,-1), 0)
+        total_ll = torch.logsumexp(torch.sum(total_ll, -1), 0)
         return likelihoods, total_ll
 
 
@@ -193,9 +192,17 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         annotations: Dict[str, torch.Tensor],
         annotators: torch.Tensor,
         confidences: Dict[str, torch.Tensor],
-        train_annotators: Dict[str, set] = None
+        train_annotators: Dict[str, torch.Tensor] = None,
+        dev_annotators_in_train: Dict[str, torch.Tensor] = None,
     ) -> Dict[str, Tensor]:
-        return super().forward(mus, annotations, annotators, confidences, train_annotators)
+        return super().forward(
+            mus,
+            annotations,
+            annotators,
+            confidences,
+            train_annotators,
+            dev_annotators_in_train,
+        )
 
 
 class ArgumentNodeAnnotationLikelihood(Likelihood):
@@ -218,9 +225,17 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         annotations: Dict[str, torch.Tensor],
         annotators: torch.Tensor,
         confidences: Dict[str, torch.Tensor],
-        train_annotators: Dict[str, set]
+        train_annotators: Dict[str, torch.Tensor] = None,
+        dev_annotators_in_train: Dict[str, torch.Tensor] = None,
     ) -> Dict[str, Tensor]:
-        return super().forward(mus, annotations, annotators, confidences, train_annotators)
+        return super().forward(
+            mus,
+            annotations,
+            annotators,
+            confidences,
+            train_annotators,
+            dev_annotators_in_train,
+        )
 
 
 class SemanticsEdgeAnnotationLikelihood(Likelihood):
@@ -238,70 +253,22 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
 
     @overrides
     def forward(
-        self, mus: ParameterDict, annotation: Dict[str, Any]
+        self,
+        mus: ParameterDict,
+        annotations: Dict[str, torch.Tensor],
+        annotators: torch.Tensor,
+        confidences: Dict[str, torch.Tensor],
+        train_annotators: Dict[str, torch.Tensor] = None,
+        dev_annotators_in_train: Dict[str, torch.Tensor] = None,
     ) -> Union[Dict[str, Tensor], Tensor]:
-        """Compute the likelihood for a single annotation for a set of subspaces"""
-        # TODO: update
-        likelihoods = {}
-        total_ll = torch.FloatTensor([0.0]).to(self.device)
-        for subspace in self.property_subspaces:
-            if subspace in annotation:
-                for p in annotation[subspace]:
-                    prop_name = p.replace(".", "-")
-
-                    # The mean for the current property
-                    mu = mus[prop_name]
-
-                    # Compute log likelihood for each annotator in the annotation
-                    # (for training, this should execute just once, as train data
-                    # has only a single annotation per node)
-                    for annotator, value in annotation[subspace][p]["value"].items():
-
-                        # Get annotator confidence
-                        conf = annotation[subspace][p]["confidence"][annotator]
-
-                        # Annotation value has to be specially determined for protoroles
-                        if subspace == "protoroles":
-
-                            # Annotator "confidence" for protoroles actually
-                            # determines whether the property applies or not
-                            if conf == 0:
-                                # Property doesn't apply; select last category
-                                value = mu.shape[-1] - 1
-                            # Otherwise, we use the value as given
-
-                            # No confidence value for protoroles; default to 1
-                            ridit_conf = 1
-
-                        # All other properties (currently, just distributivity) use
-                        # confidence as given
-                        else:
-                            ridit_conf = self.annotator_confidences[annotator].get(
-                                conf, 1
-                            )
-
-                        # Grab the random intercept for the current annotator
-                        random = self.random_effects[prop_name][annotator]
-
-                        # Compute log likelihood (clipping to prevent underflow)
-                        dist = self._get_distribution(mu, random)
-                        ll = dist.log_prob(FloatTensor([value]).to(self.device))
-                        min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
-                            self.device
-                        )
-                        ll = torch.where(
-                            ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)),
-                            ll,
-                            min_ll,
-                        )
-
-                        # Add to likelihood-by-property
-                        if p in likelihoods:
-                            likelihoods[p] += ridit_conf * ll
-                        else:
-                            likelihoods[p] = ridit_conf * ll
-                    total_ll += torch.logsumexp(likelihoods[p], 0)
-        return likelihoods, total_ll
+        return super().forward(
+            mus,
+            annotations,
+            annotators,
+            confidences,
+            train_annotators,
+            dev_annotators_in_train,
+        )
 
 
 class DocumentEdgeAnnotationLikelihood(Likelihood):

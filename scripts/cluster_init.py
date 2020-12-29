@@ -6,11 +6,9 @@ from decomp.semantics.uds import UDSSentenceGraph
 import numpy as np
 import random
 from sklearn.mixture import GaussianMixture
-import time
 import torch
 from torch.nn import Parameter, ParameterDict, Module
-from tqdm import tqdm
-from typing import List, Iterator, Union
+from typing import List, Iterator
 
 # Package internal imports
 from event_type_induction.constants import *
@@ -154,7 +152,7 @@ class GMM:
 
                                 # Raw annotations and confidences by property
                                 annotations_by_property[p].append(val)
-                                annotator_num = int(a.split('-')[-1])
+                                annotator_num = int(a.split("-")[-1])
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
@@ -170,10 +168,19 @@ class GMM:
         return (
             np.stack(all_annotations),
             properties_to_indices,
-            {p: torch.FloatTensor(np.stack(v)) for p, v in annotations_by_property.items()},
-            {p: torch.LongTensor(np.array(v)) for p, v in confidences_by_property.items()},
-            {p: torch.LongTensor(np.array(v)) for p, v in annotators_by_property.items()},
-            unique_annotators_by_property
+            {
+                p: torch.FloatTensor(np.stack(v))
+                for p, v in annotations_by_property.items()
+            },
+            {
+                p: torch.LongTensor(np.array(v))
+                for p, v in confidences_by_property.items()
+            },
+            {
+                p: torch.LongTensor(np.array(v))
+                for p, v in annotators_by_property.items()
+            },
+            unique_annotators_by_property,
         )
 
     def get_event_annotations(
@@ -239,7 +246,7 @@ class GMM:
             annotations_by_property,
             confidences_by_property,
             annotators_by_property,
-            unique_annotators_by_property
+            unique_annotators_by_property,
         ) = self.annotation_func_by_type[t](data, confidences)
         return (
             gmm.fit(average_annotations),
@@ -247,7 +254,7 @@ class GMM:
             annotations_by_property,
             confidences_by_property,
             annotators_by_property,
-            unique_annotators_by_property
+            unique_annotators_by_property,
         )
 
 
@@ -365,7 +372,7 @@ class MultiviewMixtureModel(Module):
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
-        iterations: int = 1000,
+        iterations: int = 2500,
         batch_size: int = 1,
         lr: float = 0.001,
     ) -> "MultiviewMixtureModel":
@@ -384,7 +391,7 @@ class MultiviewMixtureModel(Module):
             train_annotations_by_property,
             train_confidences_by_property,
             train_annotators_by_property,
-            train_unique_annotators_by_property
+            train_unique_annotators_by_property,
         ) = train_gmm.fit(data["train"], t, n_components, train_confidences)
         LOG.info("...GMM fitting complete")
 
@@ -396,12 +403,15 @@ class MultiviewMixtureModel(Module):
             dev_annotations_by_property,
             dev_confidences_by_property,
             dev_annotators_by_property,
-            dev_unique_annotators_by_property
+            dev_unique_annotators_by_property,
         ) = train_gmm.annotation_func_by_type[t](data["dev"], dev_confidences)
         LOG.info("...Complete.")
 
         # TODO: make same assertion for dev
-        assert train_annotations_by_property.keys() == train_confidences_by_property.keys()
+        assert (
+            train_annotations_by_property.keys() == train_confidences_by_property.keys()
+        )
+        num_train_items = 0
         for p in train_annotations_by_property:
             anno_len = len(train_annotations_by_property[p])
             conf_len = len(train_confidences_by_property[p])
@@ -412,15 +422,27 @@ class MultiviewMixtureModel(Module):
             assert (
                 num_annotators == anno_len
             ), f"mismatched annotation and annotator lengths ({anno_len} and {num_annotators})"
+            num_train_items += anno_len
 
-        """
-        for p in train_unique_annotators_by_property:
-            train_size = len(train_unique_annotators_by_property[p])
-            dev_size = len(dev_unique_annotators_by_property[p])
-            diff = dev_unique_annotators_by_property[p] - train_unique_annotators_by_property[p]
-            print(f"diff for property {p}: {len(diff)}; train={train_size}, dev={dev_size}")
-        return
-        """
+        # Determine which annotators in dev are also in train
+        # This is necessary for determining the appropriate random
+        # effects for each annotator
+        dev_annotators_in_train = {}
+        num_dev_items = 0
+        for p, dev_annos in dev_annotators_by_property.items():
+            new_dev = len(
+                dev_unique_annotators_by_property[p]
+                - train_unique_annotators_by_property[p]
+            )
+            train_annos = train_unique_annotators_by_property[p]
+            dev_annotators_in_train[p] = torch.BoolTensor(
+                [a.item() in train_annos for a in dev_annos]
+            )
+            train_unique_annotators_by_property[p] = torch.LongTensor(
+                list(train_unique_annotators_by_property[p])
+            )
+            num_dev_items += len(dev_annos)
+            # print(f"num new annotators in dev for property {p}: {new_dev}")
 
         # Get the right type of property metadata (document metadata for
         # relation types; sentence metadata for everything else)
@@ -444,32 +466,43 @@ class MultiviewMixtureModel(Module):
 
             # TODO: incorporate batch size ?
             # Training
-            _, train_ll = ll(self.mus, train_annotations_by_property, train_annotators_by_property, train_confidences_by_property)
+            _, train_ll = ll(
+                self.mus,
+                train_annotations_by_property,
+                train_annotators_by_property,
+                train_confidences_by_property,
+            )
             train_fixed_loss = -train_ll
             train_random_loss = ll.random_loss()
             train_loss = train_fixed_loss + train_random_loss
             train_loss.backward()
             optimizer.step()
             LOG.info(
-                f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / len(data['train']), 5)}"
+                f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / num_train_items, 5)}"
             )
-            LOG.info(
-                f"               random loss: {np.round(train_random_loss.item(), 5)}"
-            )
-
 
             # Eval
             # TODO: verify that dev and train annotators are using common indexing
-            _, dev_ll = ll(self.mus, dev_annotations_by_property, dev_annotators_by_property, dev_confidences_by_property, train_unique_annotators_by_property)
+            _, dev_ll = ll(
+                self.mus,
+                dev_annotations_by_property,
+                dev_annotators_by_property,
+                dev_confidences_by_property,
+                train_unique_annotators_by_property,
+                dev_annotators_in_train,
+            )
             dev_fixed_loss = -dev_ll
             LOG.info(
-                f"            dev fixed loss: {np.round(dev_fixed_loss.item() / len(data['dev']), 5)}"
+                f"            dev fixed loss: {np.round(dev_fixed_loss.item() / num_dev_items, 5)}"
             )
 
             if i and dev_fixed_loss > prev_dev_fixed_loss:
                 LOG.info("No improvement in dev LL. Stopping early.")
                 return self.eval()
             prev_dev_fixed_loss = dev_fixed_loss
+
+        # Max iterations reached
+        return self.eval()
 
 
 def main(args):
@@ -483,22 +516,26 @@ def main(args):
     dev = [s for s in uds if "dev" in s]
     data = {"train": train, "dev": dev}
 
-    LOG.info(f"Fitting mixture model with all types in range {args.min_types} to {args.max_types}, inclusive")
-
+    LOG.info(
+        f"Fitting mixture model with all types in range {args.min_types} to {args.max_types}, inclusive"
+    )
     t = STR_TO_TYPE[args.type.upper()]
     for n_components in range(args.min_types, args.max_types + 1):
         # Fit the model
         model_name = t.name + "-" + str(n_components) + ".pt"
         mmm = mmm.fit(data, t, n_components)
-        return
-
         # Save it
         save_model(mmm.state_dict(), MODEL_DIR, model_name)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("type", type=str, help="the type to cluster on")
-    parser.add_argument("min_types", type=int, help="minimum of range of numbers of types to try")
-    parser.add_argument("max_types", type=int, help="maximum of range of numbers of types to try")
+    parser.add_argument(
+        "min_types", type=int, help="minimum of range of numbers of types to try"
+    )
+    parser.add_argument(
+        "max_types", type=int, help="maximum of range of numbers of types to try"
+    )
     args = parser.parse_args()
     main(args)
