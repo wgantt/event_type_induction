@@ -164,7 +164,6 @@ class Likelihood(Module, metaclass=ABCMeta):
                 likelihoods[p] = confidence * ll
                 total_ll = likelihoods[p]
 
-        total_ll = torch.logsumexp(torch.sum(total_ll, -1), 0)
         return likelihoods, total_ll
 
 

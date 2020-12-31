@@ -63,11 +63,11 @@ class GMM:
     def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
         """Returns an iterator over sentence graph nodes or edges"""
         if t == Type.EVENT:
-            return graph.predicate_nodes.values()
+            return graph.predicate_nodes.items()
         elif t == Type.PARTICIPANT:
-            return graph.argument_nodes.values()
+            return graph.argument_nodes.items()
         elif t == Type.ROLE:
-            return graph.semantics_edges().values()
+            return graph.semantics_edges().items()
         else:
             raise ValueError(f"Unknown type {t}!")
 
@@ -80,29 +80,37 @@ class GMM:
         annotators_by_property = defaultdict(list)
         unique_annotators_by_property = defaultdict(set)
         confidences_by_property = defaultdict(list)
+        items_by_property = defaultdict(list)
         anno_vec_len = 0
         for sname in data:
             graph = self.uds[sname]
-            for anno in self.__class__.get_type_iter(graph, t):
+            for item, anno in self.__class__.get_type_iter(graph, t):
                 anno_vec = []
+                annotation_found = False
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
                     for p in sorted(self.s_metadata.properties(subspace)):
                         prop_dim = get_prop_dim(self.s_metadata, subspace, p)
                         vec = np.zeros(prop_dim)
+
+                        # The genericity subspace includes properties associated
+                        # with both events and participants. We need to mask the
+                        # ones that aren't relevant in each case
                         if (t == Type.EVENT and "arg" in p) or (
                             t == Type.PARTICIPANT and "pred" in p
                         ):
-                            continue  # hack
+                            continue
+
                         if p not in properties_to_indices:
                             properties_to_indices[p] = np.array(
                                 [anno_vec_len, anno_vec_len + prop_dim]
                             )
                             anno_vec_len += prop_dim
+
                         if subspace in anno and p in anno[subspace]:
+                            annotation_found = True
                             for a, value in anno[subspace][p]["value"].items():
 
                                 # Get confidence for this annotation
-                                # TODO: verify correctness
                                 conf = anno[subspace][p]["confidence"][a]
                                 ridit_conf = confidences[a]
                                 if (
@@ -156,14 +164,17 @@ class GMM:
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
+                                items_by_property[p].append(item)
 
                         # Compute average annotation for this item; for all
                         # train data, there will be only one annotation
                         anno_vec.append(vec / max(vec.sum(), 1))
 
                 # Append current annotation vector to list of all
-                # annotation vectors
-                all_annotations.append(np.concatenate(anno_vec))
+                # annotation vectors (but only if we actually found
+                # relevant annotations)
+                if annotation_found:
+                    all_annotations.append(np.concatenate(anno_vec))
 
         return (
             np.stack(all_annotations),
@@ -181,6 +192,7 @@ class GMM:
                 for p, v in annotators_by_property.items()
             },
             unique_annotators_by_property,
+            items_by_property,
         )
 
     def get_event_annotations(
@@ -247,14 +259,17 @@ class GMM:
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
+            items_by_property,
         ) = self.annotation_func_by_type[t](data, confidences)
         return (
             gmm.fit(average_annotations),
+            average_annotations,
             properties_to_indices,
             annotations_by_property,
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
+            items_by_property,
         )
 
 
@@ -278,6 +293,7 @@ class MultiviewMixtureModel(Module):
             Type.RELATION: load_doc_edge_annotator_ids,
         }
         self.mus = None
+        self.component_weights = None
         self.random_effects = None
         self.device = device
 
@@ -367,13 +383,48 @@ class MultiviewMixtureModel(Module):
             ridits = ridit_score_confidence(self.uds, docs=data)
         return {a: ridits.get(a) for a in annotator_ids}
 
+    def _freeze(self, tune_component_weights=False):
+        """Freeze some or all parameters for eval on dev"""
+        if not tune_component_weights:
+            return self.eval()
+
+        for name, param in self.named_parameters():
+            if name != "component_weights":
+                param.requires_grad = False
+
+    def _unfreeze(self):
+        """Unfreeze all parameters for training"""
+        for name, param in self.named_parameters():
+            param.requires_grad = True
+
+    def per_item_posterior(
+        self,
+        ll: Dict[str, torch.FloatTensor],
+        items_by_property: Dict[str, List[str]],
+        n_components: int,
+    ):
+        """Computes the posterior distribution over types per node or edge"""
+        post = defaultdict(lambda: torch.zeros(n_components))
+
+        # accumulate likelihood for each node/edge
+        for prop, items in items_by_property.items():
+            prop_ll = ll[prop]
+            assert prop_ll.shape[-1] == len(
+                items
+            ), f"{prop}: ll: {prop_ll.shape}; items: {len(items)}"
+            for i, item in enumerate(items):
+                post[item] += prop_ll[:, i]
+
+        # multiply in prior over components
+        post = {k: v * self.component_weights for k, v in post.items()}
+        return post
+
     def fit(
         self,
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
         iterations: int = 2500,
-        batch_size: int = 1,
         lr: float = 0.001,
     ) -> "MultiviewMixtureModel":
         random.seed(self.random_seed)
@@ -387,11 +438,13 @@ class MultiviewMixtureModel(Module):
         train_gmm = GMM(self.uds)
         (
             gmm,
+            train_avg_annotations,
             train_properties_to_indices,
             train_annotations_by_property,
             train_confidences_by_property,
             train_annotators_by_property,
             train_unique_annotators_by_property,
+            train_items_by_property,
         ) = train_gmm.fit(data["train"], t, n_components, train_confidences)
         LOG.info("...GMM fitting complete")
 
@@ -404,6 +457,7 @@ class MultiviewMixtureModel(Module):
             dev_confidences_by_property,
             dev_annotators_by_property,
             dev_unique_annotators_by_property,
+            dev_items_by_property,
         ) = train_gmm.annotation_func_by_type[t](data["dev"], dev_confidences)
         LOG.info("...Complete.")
 
@@ -411,10 +465,10 @@ class MultiviewMixtureModel(Module):
         assert (
             train_annotations_by_property.keys() == train_confidences_by_property.keys()
         )
-        num_train_items = 0
         for p in train_annotations_by_property:
             anno_len = len(train_annotations_by_property[p])
             conf_len = len(train_confidences_by_property[p])
+            item_len = len(train_items_by_property[p])
             num_annotators = len(train_annotators_by_property[p])
             assert (
                 anno_len == conf_len
@@ -422,13 +476,12 @@ class MultiviewMixtureModel(Module):
             assert (
                 num_annotators == anno_len
             ), f"mismatched annotation and annotator lengths ({anno_len} and {num_annotators})"
-            num_train_items += anno_len
+            assert item_len == anno_len
 
         # Determine which annotators in dev are also in train
         # This is necessary for determining the appropriate random
         # effects for each annotator
         dev_annotators_in_train = {}
-        num_dev_items = 0
         for p, dev_annos in dev_annotators_by_property.items():
             new_dev = len(
                 dev_unique_annotators_by_property[p]
@@ -441,8 +494,6 @@ class MultiviewMixtureModel(Module):
             train_unique_annotators_by_property[p] = torch.LongTensor(
                 list(train_unique_annotators_by_property[p])
             )
-            num_dev_items += len(dev_annos)
-            # print(f"num new annotators in dev for property {p}: {new_dev}")
 
         # Get the right type of property metadata (document metadata for
         # relation types; sentence metadata for everything else)
@@ -454,36 +505,54 @@ class MultiviewMixtureModel(Module):
         else:
             metadata = self.s_metadata
 
-        # Initialize Likelihood module, property means, and annotator random effects
+        # Initialize Likelihood module, property means,
+        # annotator random effects, and component weights
         ll = self.type_to_likelihood[t](train_confidences, metadata, self.device)
         self._init_mus(t, gmm.means_, train_properties_to_indices)
         self.random_effects = ll.random_effects
+        self.component_weights = Parameter(torch.log(torch.FloatTensor(gmm.weights_)))
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         prev_dev_ll = -np.inf
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
-            # TODO: incorporate batch size ?
             # Training
-            _, train_ll = ll(
+            per_prop_train_ll, train_ll = ll(
                 self.mus,
                 train_annotations_by_property,
                 train_annotators_by_property,
                 train_confidences_by_property,
             )
-            train_fixed_loss = -train_ll
+            print(
+                self.per_item_posterior(
+                    per_prop_train_ll, train_items_by_property, n_components
+                )
+            )
+
+            # sum over per-property annotations
+            fixed_loss = torch.sum(train_ll, -1)
+
+            # add in prior over components (once for each node/edge)
+            fixed_loss += self.component_weights * len(train_avg_annotations)
+
+            # logsumexp over all components to get overall LL
+            fixed_loss = torch.logsumexp(fixed_loss, 0)
+
+            # add in random loss, backprop, and take gradient step
+            train_fixed_loss = -fixed_loss
             train_random_loss = ll.random_loss()
             train_loss = train_fixed_loss + train_random_loss
             train_loss.backward()
             optimizer.step()
             LOG.info(
-                f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / num_train_items, 5)}"
+                f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item(), 5)}"
             )
 
-            # Eval
-            # TODO: verify that dev and train annotators are using common indexing
-            _, dev_ll = ll(
+            # Eval: same as training, except that we freeze all parameters
+            # save the component weights, which are tuned
+            self._freeze()
+            per_prop_dev_ll, dev_ll = ll(
                 self.mus,
                 dev_annotations_by_property,
                 dev_annotators_by_property,
@@ -491,10 +560,14 @@ class MultiviewMixtureModel(Module):
                 train_unique_annotators_by_property,
                 dev_annotators_in_train,
             )
-            dev_fixed_loss = -dev_ll
+            fixed_loss = torch.sum(dev_ll, -1)
+            fixed_loss += self.component_weights * len(dev_avg_annotations)
+            fixed_loss = torch.logsumexp(fixed_loss, 0)
+            dev_fixed_loss = -fixed_loss
             LOG.info(
-                f"            dev fixed loss: {np.round(dev_fixed_loss.item() / num_dev_items, 5)}"
+                f"            dev fixed loss: {np.round(dev_fixed_loss.item(), 5)}"
             )
+            self._unfreeze()
 
             if i and dev_fixed_loss > prev_dev_fixed_loss:
                 LOG.info("No improvement in dev LL. Stopping early.")
