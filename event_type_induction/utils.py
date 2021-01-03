@@ -5,12 +5,13 @@ import torch
 
 from collections import defaultdict
 from decomp import UDSCorpus, RawUDSAnnotation
+from decomp.semantics.uds import UDSSentenceGraph
 from enum import Enum
 from event_type_induction.constants import *
 from glob import glob
 from itertools import product
 from pkg_resources import resource_filename
-from typing import Any, Dict, Generator, Iterable, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, Iterator, List, Set, Tuple
 
 
 class AllenRelation(Enum):
@@ -114,6 +115,87 @@ def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
         split = sample_sentence.split("-")[1]
         splits[split].add(doc_id)
     return splits
+
+
+def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
+    """Returns an iterator over sentence graph nodes or edges"""
+    if t == Type.EVENT:
+        return graph.predicate_nodes.items()
+    elif t == Type.PARTICIPANT:
+        return graph.argument_nodes.items()
+    elif t == Type.ROLE:
+        return graph.semantics_edges().items()
+    else:
+        raise ValueError(f"Unknown type {t}!")
+
+
+def get_property_means(
+    uds: UDSCorpus, data: List[str], t: Type
+) -> Dict[str, List[np.ndarray]]:
+    """Get the mean annotation for each property
+
+    TODO: modify to handle relation types
+
+    """
+    annotations_by_property = defaultdict(list)
+
+    if t == Type.EVENT:
+        duration_to_category = {
+            cat: idx
+            for idx, cat in enumerate(
+                uds.metadata.sentence_metadata["time"]["duration"].value.categories
+            )
+        }
+
+    for sname in data:
+        graph = uds[sname]
+        for item, anno in get_type_iter(graph, t):
+            for subspace in SUBSPACES_BY_TYPE[t]:
+                meta = uds.metadata.sentence_metadata
+                for p in meta.properties(subspace):
+                    if (t == Type.EVENT and "arg" in p) or (
+                        t == Type.PARTICIPANT and "pred" in p
+                    ):
+                        continue
+                    prop_dim = get_prop_dim(meta, subspace, p)
+                    if subspace in anno and p in anno[subspace]:
+                        for a, value in anno[subspace][p]["value"].items():
+                            vec = np.zeros(prop_dim)
+                            conf = anno[subspace][p]["confidence"][a]
+                            # No value specified; assume this means "does not apply"
+                            # and select last category
+                            if value is None:
+                                assert (
+                                    p in CONDITIONAL_PROPERTIES
+                                ), f"unexpected None value for property {p}"
+                                val = prop_dim - 1
+                                # Only duration annotations are string-valued
+                            elif isinstance(value, str):
+                                assert (
+                                    p == "duration"
+                                ), f"unexpected string value for property {p}"
+                                val = duration_to_category[value]
+                            # Protoroles uses confidence to indicate whether the
+                            # property applies or not
+                            elif subspace == "protoroles":
+                                if conf == 0:
+                                    val = prop_dim - 1
+                                else:
+                                    val = value
+                            else:
+                                val = value
+
+                            if prop_dim == 1:  # binary
+                                assert (
+                                    val == 0 or val == 1
+                                ), f"non-binary value for binary property {p}"
+                                vec[0] = val
+                            else:  # categorical
+                                vec[val] = 1
+
+                            annotations_by_property[p].append(vec)
+
+    return {p: np.mean(v, axis=0) for p, v in annotations_by_property.items()}
 
 
 def load_event_structure_annotations(uds: UDSCorpus) -> None:

@@ -2,7 +2,6 @@
 import argparse
 from collections import defaultdict
 from decomp import UDSCorpus
-from decomp.semantics.uds import UDSSentenceGraph
 import numpy as np
 import random
 from sklearn.mixture import GaussianMixture
@@ -14,16 +13,8 @@ from typing import List, Iterator
 from event_type_induction.constants import *
 from event_type_induction.modules.vectorized_likelihood import *
 from scripts.setup_logging import setup_logging
-from event_type_induction.utils import (
-    load_pred_node_annotator_ids,
-    load_arg_node_annotator_ids,
-    load_sem_edge_annotator_ids,
-    load_doc_edge_annotator_ids,
-    load_event_structure_annotations,
-    get_prop_dim,
-    ridit_score_confidence,
-    save_model,
-)
+from event_type_induction.utils import *
+
 
 LOG = setup_logging()
 MODEL_DIR = "/data/wgantt/event_type_induction/"
@@ -59,20 +50,12 @@ class GMM:
             Type.RELATION: self.get_relation_annotations,
         }
 
-    @staticmethod
-    def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
-        """Returns an iterator over sentence graph nodes or edges"""
-        if t == Type.EVENT:
-            return graph.predicate_nodes.items()
-        elif t == Type.PARTICIPANT:
-            return graph.argument_nodes.items()
-        elif t == Type.ROLE:
-            return graph.semantics_edges().items()
-        else:
-            raise ValueError(f"Unknown type {t}!")
-
     def get_annotations(
-        self, t: Type, data: List[str], confidences: Dict[str, Dict[int, float]]
+        self,
+        t: Type,
+        data: List[str],
+        confidences: Dict[str, Dict[int, float]],
+        property_means: Dict[str, np.ndarray],
     ):
         all_annotations = []
         properties_to_indices = {}
@@ -84,7 +67,7 @@ class GMM:
         anno_vec_len = 0
         for sname in data:
             graph = self.uds[sname]
-            for item, anno in self.__class__.get_type_iter(graph, t):
+            for item, anno in get_type_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
@@ -165,6 +148,9 @@ class GMM:
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
                                 items_by_property[p].append(item)
+                        else:
+                            # No annotation for this property, so just use the mean
+                            vec = property_means[p]
 
                         # Compute average annotation for this item; for all
                         # train data, there will be only one annotation
@@ -196,23 +182,36 @@ class GMM:
         )
 
     def get_event_annotations(
-        self, data: List[str], confidences: Dict[str, Dict[int, float]]
+        self,
+        data: List[str],
+        confidences: Dict[str, Dict[int, float]],
+        property_means: Dict[str, np.ndarray],
     ):
-        return self.get_annotations(Type.EVENT, data, confidences)
+        return self.get_annotations(Type.EVENT, data, confidences, property_means)
 
     def get_participant_annotations(
-        self, data: List[str], confidences: Dict[str, Dict[int, float]]
+        self,
+        data: List[str],
+        confidences: Dict[str, Dict[int, float]],
+        property_means: Dict[str, np.ndarray],
     ):
-        return self.get_annotations(Type.PARTICIPANT, data, confidences)
+        return self.get_annotations(Type.PARTICIPANT, data, confidences, property_means)
 
     def get_role_annotations(
-        self, data: List[str], confidences: Dict[str, Dict[int, float]]
+        self,
+        data: List[str],
+        confidences: Dict[str, Dict[int, float]],
+        property_means: Dict[str, np.ndarray],
     ):
-        return self.get_annotations(Type.ROLE, data, confidences)
+        return self.get_annotations(Type.ROLE, data, confidences, property_means)
 
     def get_relation_annotations(
-        self, data: List[str], confidences: Dict[str, Dict[int, float]]
+        self,
+        data: List[str],
+        confidences: Dict[str, Dict[int, float]],
+        property_means: Dict[str, np.ndarray],
     ):
+        # TODO: update
         all_annotations = []
         annotations_by_property = defaultdict(list)
         confidences_by_property = defaultdict(list)
@@ -252,6 +251,7 @@ class GMM:
         confidences: Dict[str, Dict[int, float]],
     ) -> GaussianMixture:
         gmm = GaussianMixture(n_components, random_state=self.random_seed)
+        property_means = get_property_means(self.uds, data, t)
         (
             average_annotations,
             properties_to_indices,
@@ -260,7 +260,7 @@ class GMM:
             annotators_by_property,
             unique_annotators_by_property,
             items_by_property,
-        ) = self.annotation_func_by_type[t](data, confidences)
+        ) = self.annotation_func_by_type[t](data, confidences, property_means)
         return (
             gmm.fit(average_annotations),
             average_annotations,
@@ -450,6 +450,8 @@ class MultiviewMixtureModel(Module):
 
         LOG.info("Loading dev data...")
         dev_confidences = self._get_annotator_ridits(data["dev"], t)
+        dev_property_means = get_property_means(self.uds, data["dev"], t)
+
         (
             dev_avg_annotations,
             dev_properties_to_indices,
@@ -458,7 +460,9 @@ class MultiviewMixtureModel(Module):
             dev_annotators_by_property,
             dev_unique_annotators_by_property,
             dev_items_by_property,
-        ) = train_gmm.annotation_func_by_type[t](data["dev"], dev_confidences)
+        ) = train_gmm.annotation_func_by_type[t](
+            data["dev"], dev_confidences, dev_property_means
+        )
         LOG.info("...Complete.")
 
         # TODO: make same assertion for dev
@@ -524,11 +528,13 @@ class MultiviewMixtureModel(Module):
                 train_annotators_by_property,
                 train_confidences_by_property,
             )
+            """
             print(
                 self.per_item_posterior(
                     per_prop_train_ll, train_items_by_property, n_components
                 )
             )
+            """
 
             # sum over per-property annotations
             fixed_loss = torch.sum(train_ll, -1)
@@ -588,11 +594,11 @@ def main(args):
     train = [s for s in uds if "train" in s]
     dev = [s for s in uds if "dev" in s]
     data = {"train": train, "dev": dev}
+    t = STR_TO_TYPE[args.type.upper()]
 
     LOG.info(
         f"Fitting mixture model with all types in range {args.min_types} to {args.max_types}, inclusive"
     )
-    t = STR_TO_TYPE[args.type.upper()]
     for n_components in range(args.min_types, args.max_types + 1):
         # Fit the model
         model_name = t.name + "-" + str(n_components) + ".pt"
