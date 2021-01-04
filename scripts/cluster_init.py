@@ -19,6 +19,8 @@ from event_type_induction.utils import *
 LOG = setup_logging()
 MODEL_DIR = "/data/wgantt/event_type_induction/"
 
+# TODO: modularize
+
 
 class GMM:
     def __init__(
@@ -65,11 +67,16 @@ class GMM:
         confidences_by_property = defaultdict(list)
         items_by_property = defaultdict(list)
         anno_vec_len = 0
+        items_annotated_for_subspace = 0
+        items_missing_a_property = 0
+        item_count = 0
         for sname in data:
             graph = self.uds[sname]
             for item, anno in get_type_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
+                missing_at_least_one_property = False
+                item_count += 1
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
                     for p in sorted(self.s_metadata.properties(subspace)):
                         prop_dim = get_prop_dim(self.s_metadata, subspace, p)
@@ -151,6 +158,7 @@ class GMM:
                         else:
                             # No annotation for this property, so just use the mean
                             vec = property_means[p]
+                            missing_at_least_one_property = True
 
                         # Compute average annotation for this item; for all
                         # train data, there will be only one annotation
@@ -161,6 +169,16 @@ class GMM:
                 # relevant annotations)
                 if annotation_found:
                     all_annotations.append(np.concatenate(anno_vec))
+                    items_annotated_for_subspace += 1
+                if missing_at_least_one_property:
+                    items_missing_a_property += 1
+
+        LOG.info(
+            f"{items_annotated_for_subspace} of {item_count} nodes/edges had at least one {t.name} property annotation"
+        )
+        LOG.info(
+            f"{items_missing_a_property} of {item_count} nodes/edges were *missing* at least one {t.name} property"
+        )
 
         return (
             np.stack(all_annotations),
@@ -383,20 +401,6 @@ class MultiviewMixtureModel(Module):
             ridits = ridit_score_confidence(self.uds, docs=data)
         return {a: ridits.get(a) for a in annotator_ids}
 
-    def _freeze(self, tune_component_weights=False):
-        """Freeze some or all parameters for eval on dev"""
-        if not tune_component_weights:
-            return self.eval()
-
-        for name, param in self.named_parameters():
-            if name != "component_weights":
-                param.requires_grad = False
-
-    def _unfreeze(self):
-        """Unfreeze all parameters for training"""
-        for name, param in self.named_parameters():
-            param.requires_grad = True
-
     def per_item_posterior(
         self,
         ll: Dict[str, torch.FloatTensor],
@@ -416,7 +420,7 @@ class MultiviewMixtureModel(Module):
                 post[item] += prop_ll[:, i]
 
         # multiply in prior over components
-        post = {k: v * self.component_weights for k, v in post.items()}
+        post = {k: exp_normalize(v + self.component_weights) for k, v in post.items()}
         return post
 
     def fit(
@@ -426,6 +430,7 @@ class MultiviewMixtureModel(Module):
         n_components: int,
         iterations: int = 2500,
         lr: float = 0.001,
+        verbosity: int = 10,
     ) -> "MultiviewMixtureModel":
         random.seed(self.random_seed)
         torch.manual_seed(self.random_seed)
@@ -518,6 +523,7 @@ class MultiviewMixtureModel(Module):
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         prev_dev_ll = -np.inf
+        LOG.info(f"Initial component weights: {torch.exp(self.component_weights)}")
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
@@ -528,57 +534,56 @@ class MultiviewMixtureModel(Module):
                 train_annotators_by_property,
                 train_confidences_by_property,
             )
-            """
-            print(
-                self.per_item_posterior(
-                    per_prop_train_ll, train_items_by_property, n_components
-                )
-            )
-            """
 
             # sum over per-property annotations
-            fixed_loss = torch.sum(train_ll, -1)
+            train_fixed_loss = torch.sum(train_ll, -1)
 
             # add in prior over components (once for each node/edge)
-            fixed_loss += self.component_weights * len(train_avg_annotations)
+            train_fixed_loss += self.component_weights
 
             # logsumexp over all components to get overall LL
-            fixed_loss = torch.logsumexp(fixed_loss, 0)
+            train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0)
 
             # add in random loss, backprop, and take gradient step
-            train_fixed_loss = -fixed_loss
             train_random_loss = ll.random_loss()
             train_loss = train_fixed_loss + train_random_loss
             train_loss.backward()
             optimizer.step()
-            LOG.info(
-                f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item(), 5)}"
-            )
+            if i % verbosity == 0:
+                LOG.info(
+                    f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / len(train_avg_annotations), 5)}"
+                )
+                LOG.info(
+                    f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
+                )
+                LOG.info(
+                    f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
+                )
+                # self.per_item_posterior(per_prop_train_ll, train_items_by_property, n_components)
 
-            # Eval: same as training, except that we freeze all parameters
-            # save the component weights, which are tuned
-            self._freeze()
-            per_prop_dev_ll, dev_ll = ll(
-                self.mus,
-                dev_annotations_by_property,
-                dev_annotators_by_property,
-                dev_confidences_by_property,
-                train_unique_annotators_by_property,
-                dev_annotators_in_train,
-            )
-            fixed_loss = torch.sum(dev_ll, -1)
-            fixed_loss += self.component_weights * len(dev_avg_annotations)
-            fixed_loss = torch.logsumexp(fixed_loss, 0)
-            dev_fixed_loss = -fixed_loss
-            LOG.info(
-                f"            dev fixed loss: {np.round(dev_fixed_loss.item(), 5)}"
-            )
-            self._unfreeze()
+            # eval
+            with torch.no_grad():
+                per_prop_dev_ll, dev_ll = ll(
+                    self.mus,
+                    dev_annotations_by_property,
+                    dev_annotators_by_property,
+                    dev_confidences_by_property,
+                    train_unique_annotators_by_property,
+                    dev_annotators_in_train,
+                )
+                dev_fixed_loss = torch.sum(dev_ll, -1)
+                dev_fixed_loss += self.component_weights
+                dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0)
 
-            if i and dev_fixed_loss > prev_dev_fixed_loss:
-                LOG.info("No improvement in dev LL. Stopping early.")
-                return self.eval()
-            prev_dev_fixed_loss = dev_fixed_loss
+                if i % verbosity == 0:
+                    LOG.info(
+                        f"            dev fixed loss: {np.round(dev_fixed_loss.item() / len(dev_avg_annotations), 5)}"
+                    )
+
+                if i and dev_fixed_loss > prev_dev_fixed_loss:
+                    LOG.info("No improvement in dev LL. Stopping early.")
+                    return self.eval()
+                prev_dev_fixed_loss = dev_fixed_loss
 
         # Max iterations reached
         return self.eval()

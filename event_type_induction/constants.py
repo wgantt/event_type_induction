@@ -5,7 +5,7 @@ POS_INF = 1e10
 NEG_INF = -1e10
 ZERO = 1e-10
 ONE = 1 - ZERO
-MIN_LIKELIHOOD = 1e-3
+MIN_LIKELIHOOD = 1e-5
 
 # UDS-related constants
 class Type(Enum):

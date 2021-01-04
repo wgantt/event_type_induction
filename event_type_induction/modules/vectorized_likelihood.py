@@ -316,7 +316,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
     def forward(
         self, mus: ParameterDict, cov: Parameter, annotation: Dict[str, Any]
     ) -> Dict[str, Tensor]:
-        # TODO: update
+        # TODO: UPDATE based on discussion w/ Aaron from 12/23
         likelihoods = {}
         total_ll = torch.FloatTensor([0.0])
         temp_rels = defaultdict(list)
