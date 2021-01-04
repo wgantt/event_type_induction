@@ -21,7 +21,6 @@ MODEL_DIR = "/data/wgantt/event_type_induction/"
 
 # TODO: modularize
 
-
 class GMM:
     def __init__(
         self, uds: UDSCorpus, random_seed: int = 42,
@@ -59,24 +58,55 @@ class GMM:
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
     ):
+        """Retrieves annotations from a UDSCorpus for a specified type
+
+        Should definitely be factored out into utils or something; I just
+        haven't taken the time yet.
+
+        Parameters
+        ----------
+        t
+            the type for which annotations should be retrieved
+        data
+            a list of identifiers for UDSSentenceGraphs, for which
+            the annotations are to be retrieved
+        confidences
+            ridit-scored confidence values for each annotator, keyed on
+            annotator name. Nested dict 
+        property_means
+            pre-computed mean values for each property; these are used to
+            impute missing annotations for each item
+        """
+        # Averaged annotations for each item
         all_annotations = []
+
+        # Maps properties to a range of indices in the annotation vector
+        # for each item
         properties_to_indices = {}
+
+        # All (raw) annotations, grouped by property
         annotations_by_property = defaultdict(list)
+
+        # Annotators corresponding to each annotation in annotations_by_property
         annotators_by_property = defaultdict(list)
-        unique_annotators_by_property = defaultdict(set)
+
+        # Confidence scores for each annotation in annotations_by_property
         confidences_by_property = defaultdict(list)
+
+        # Unique annotators for each property
+        unique_annotators_by_property = defaultdict(set)
+
+        # Item name (node or edge) corresponding to each annotation in annotations_by_property
         items_by_property = defaultdict(list)
+
+        # The length of a full annotation vector
         anno_vec_len = 0
-        items_annotated_for_subspace = 0
-        items_missing_a_property = 0
-        item_count = 0
+
         for sname in data:
             graph = self.uds[sname]
             for item, anno in get_type_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
-                missing_at_least_one_property = False
-                item_count += 1
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
                     for p in sorted(self.s_metadata.properties(subspace)):
                         prop_dim = get_prop_dim(self.s_metadata, subspace, p)
@@ -90,12 +120,15 @@ class GMM:
                         ):
                             continue
 
+                        # Associate the current property with a range of indices
+                        # in the annotation vector
                         if p not in properties_to_indices:
                             properties_to_indices[p] = np.array(
                                 [anno_vec_len, anno_vec_len + prop_dim]
                             )
                             anno_vec_len += prop_dim
 
+                        # Process annotations for this item only if they actually exist
                         if subspace in anno and p in anno[subspace]:
                             annotation_found = True
                             for a, value in anno[subspace][p]["value"].items():
@@ -107,7 +140,7 @@ class GMM:
                                     ridit_conf is None
                                     or ridit_conf.get(conf) is None
                                     or ridit_conf[conf] < 0
-                                ):
+                                ): # invalid confidence values; default to 1
                                     ridit_conf = 1
                                 else:
                                     ridit_conf = ridit_conf.get(conf, 1)
@@ -158,7 +191,6 @@ class GMM:
                         else:
                             # No annotation for this property, so just use the mean
                             vec = property_means[p]
-                            missing_at_least_one_property = True
 
                         # Compute average annotation for this item; for all
                         # train data, there will be only one annotation
@@ -169,16 +201,6 @@ class GMM:
                 # relevant annotations)
                 if annotation_found:
                     all_annotations.append(np.concatenate(anno_vec))
-                    items_annotated_for_subspace += 1
-                if missing_at_least_one_property:
-                    items_missing_a_property += 1
-
-        LOG.info(
-            f"{items_annotated_for_subspace} of {item_count} nodes/edges had at least one {t.name} property annotation"
-        )
-        LOG.info(
-            f"{items_missing_a_property} of {item_count} nodes/edges were *missing* at least one {t.name} property"
-        )
 
         return (
             np.stack(all_annotations),
@@ -229,7 +251,7 @@ class GMM:
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
     ):
-        # TODO: update
+        # TODO: UPDATE
         all_annotations = []
         annotations_by_property = defaultdict(list)
         confidences_by_property = defaultdict(list)
@@ -279,6 +301,10 @@ class GMM:
             unique_annotators_by_property,
             items_by_property,
         ) = self.annotation_func_by_type[t](data, confidences, property_means)
+
+        # Probably shouldn't be returning all these things from a call to
+        # "fit", but didn't want to have to separately call the annotation
+        # getter function again
         return (
             gmm.fit(average_annotations),
             average_annotations,
@@ -556,9 +582,7 @@ class MultiviewMixtureModel(Module):
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
                 )
-                LOG.info(
-                    f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
-                )
+                LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
                 # self.per_item_posterior(per_prop_train_ll, train_items_by_property, n_components)
 
             # eval
@@ -613,6 +637,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # TODO: add more arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("type", type=str, help="the type to cluster on")
     parser.add_argument(
