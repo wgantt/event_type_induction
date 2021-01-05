@@ -107,6 +107,13 @@ class GMM:
             for item, anno in get_type_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
+
+                if t == Type.ROLE and (("protoroles" not in anno) or ("distributivity" not in anno)):
+                    # We subset to only those edges annotated for both
+                    # protoroles and distributivity to avoid having to
+                    # do heavy imputation
+                    continue
+
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
                     for p in sorted(self.s_metadata.properties(subspace)):
                         prop_dim = get_prop_dim(self.s_metadata, subspace, p)
@@ -575,8 +582,9 @@ class MultiviewMixtureModel(Module):
             train_loss.backward()
             optimizer.step()
             if i % verbosity == 0:
-                # LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
-                # LOG.info(f"per-component loss: {torch.sum(train_ll, -1)}")
+                LOG.info(f"raw train fixed loss: {np.round(train_fixed_loss.item(), 5)}")
+                LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
+                LOG.info(f"per-component loss: {torch.sum(train_ll, -1)}")
 
                 LOG.info(
                     f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / len(train_avg_annotations), 5)}"
