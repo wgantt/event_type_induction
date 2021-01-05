@@ -210,7 +210,7 @@ class GMM:
                 for p, v in annotations_by_property.items()
             },
             {
-                p: torch.LongTensor(np.array(v))
+                p: torch.FloatTensor(np.array(v))
                 for p, v in confidences_by_property.items()
             },
             {
@@ -549,7 +549,6 @@ class MultiviewMixtureModel(Module):
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         prev_dev_ll = -np.inf
-        LOG.info(f"Initial component weights: {torch.exp(self.component_weights)}")
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
@@ -564,7 +563,7 @@ class MultiviewMixtureModel(Module):
             # sum over per-property annotations
             train_fixed_loss = torch.sum(train_ll, -1)
 
-            # add in prior over components (once for each node/edge)
+            # add in prior over components
             train_fixed_loss += self.component_weights
 
             # logsumexp over all components to get overall LL
@@ -576,13 +575,15 @@ class MultiviewMixtureModel(Module):
             train_loss.backward()
             optimizer.step()
             if i % verbosity == 0:
+                # LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
+                # LOG.info(f"per-component loss: {torch.sum(train_ll, -1)}")
+
                 LOG.info(
                     f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / len(train_avg_annotations), 5)}"
                 )
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
                 )
-                LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
                 # self.per_item_posterior(per_prop_train_ll, train_items_by_property, n_components)
 
             # eval
