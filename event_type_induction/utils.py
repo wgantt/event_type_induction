@@ -131,7 +131,7 @@ def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
 
 def get_property_means(
     uds: UDSCorpus, data: List[str], t: Type
-) -> Dict[str, List[np.ndarray]]:
+) -> Dict[str, np.ndarray]:
     """Get the mean annotation for each property
 
     TODO: modify to handle relation types

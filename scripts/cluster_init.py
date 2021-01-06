@@ -6,6 +6,7 @@ import numpy as np
 import random
 from sklearn.mixture import GaussianMixture
 import torch
+from torch.distributions import Dirichlet
 from torch.nn import Parameter, ParameterDict, Module
 from typing import List, Iterator
 
@@ -20,6 +21,7 @@ LOG = setup_logging()
 MODEL_DIR = "/data/wgantt/event_type_induction/"
 
 # TODO: modularize
+
 
 class GMM:
     def __init__(
@@ -102,13 +104,18 @@ class GMM:
         # The length of a full annotation vector
         anno_vec_len = 0
 
+        # Total number of annotations
+        total_annos = 0
+
         for sname in data:
             graph = self.uds[sname]
             for item, anno in get_type_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
 
-                if t == Type.ROLE and (("protoroles" not in anno) or ("distributivity" not in anno)):
+                if t == Type.ROLE and (
+                    ("protoroles" not in anno) or ("distributivity" not in anno)
+                ):
                     # We subset to only those edges annotated for both
                     # protoroles and distributivity to avoid having to
                     # do heavy imputation
@@ -147,7 +154,7 @@ class GMM:
                                     ridit_conf is None
                                     or ridit_conf.get(conf) is None
                                     or ridit_conf[conf] < 0
-                                ): # invalid confidence values; default to 1
+                                ):  # invalid confidence values; default to 1
                                     ridit_conf = 1
                                 else:
                                     ridit_conf = ridit_conf.get(conf, 1)
@@ -195,6 +202,7 @@ class GMM:
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
                                 items_by_property[p].append(item)
+                                total_annos += 1
                         else:
                             # No annotation for this property, so just use the mean
                             vec = property_means[p]
@@ -210,6 +218,7 @@ class GMM:
                     all_annotations.append(np.concatenate(anno_vec))
 
         return (
+            total_annos,
             np.stack(all_annotations),
             properties_to_indices,
             {
@@ -300,6 +309,7 @@ class GMM:
         gmm = GaussianMixture(n_components, random_state=self.random_seed)
         property_means = get_property_means(self.uds, data, t)
         (
+            total_annos,
             average_annotations,
             properties_to_indices,
             annotations_by_property,
@@ -314,6 +324,7 @@ class GMM:
         # getter function again
         return (
             gmm.fit(average_annotations),
+            total_annos,
             average_annotations,
             properties_to_indices,
             annotations_by_property,
@@ -434,28 +445,6 @@ class MultiviewMixtureModel(Module):
             ridits = ridit_score_confidence(self.uds, docs=data)
         return {a: ridits.get(a) for a in annotator_ids}
 
-    def per_item_posterior(
-        self,
-        ll: Dict[str, torch.FloatTensor],
-        items_by_property: Dict[str, List[str]],
-        n_components: int,
-    ):
-        """Computes the posterior distribution over types per node or edge"""
-        post = defaultdict(lambda: torch.zeros(n_components))
-
-        # accumulate likelihood for each node/edge
-        for prop, items in items_by_property.items():
-            prop_ll = ll[prop]
-            assert prop_ll.shape[-1] == len(
-                items
-            ), f"{prop}: ll: {prop_ll.shape}; items: {len(items)}"
-            for i, item in enumerate(items):
-                post[item] += prop_ll[:, i]
-
-        # multiply in prior over components
-        post = {k: exp_normalize(v + self.component_weights) for k, v in post.items()}
-        return post
-
     def fit(
         self,
         data: Dict[str, List[str]],
@@ -463,6 +452,7 @@ class MultiviewMixtureModel(Module):
         n_components: int,
         iterations: int = 2500,
         lr: float = 0.001,
+        concentration: float = 2.5,
         verbosity: int = 10,
     ) -> "MultiviewMixtureModel":
         random.seed(self.random_seed)
@@ -476,6 +466,7 @@ class MultiviewMixtureModel(Module):
         train_gmm = GMM(self.uds)
         (
             gmm,
+            train_total_annos,
             train_avg_annotations,
             train_properties_to_indices,
             train_annotations_by_property,
@@ -491,6 +482,7 @@ class MultiviewMixtureModel(Module):
         dev_property_means = get_property_means(self.uds, data["dev"], t)
 
         (
+            dev_total_annos,
             dev_avg_annotations,
             dev_properties_to_indices,
             dev_annotations_by_property,
@@ -502,6 +494,8 @@ class MultiviewMixtureModel(Module):
             data["dev"], dev_confidences, dev_property_means
         )
         LOG.info("...Complete.")
+        LOG.info(f"total train annotations: {train_total_annos}")
+        LOG.info(f"total dev annotations: {dev_total_annos}")
 
         # TODO: make same assertion for dev
         assert (
@@ -554,12 +548,15 @@ class MultiviewMixtureModel(Module):
         self.random_effects = ll.random_effects
         self.component_weights = Parameter(torch.log(torch.FloatTensor(gmm.weights_)))
 
+        # Dirichlet hyperprior over component weights
+        hyperprior = Dirichlet(torch.ones(n_components) * concentration)
+
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         prev_dev_ll = -np.inf
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
-            # Training
+            # training
             per_prop_train_ll, train_ll = ll(
                 self.mus,
                 train_annotations_by_property,
@@ -576,23 +573,36 @@ class MultiviewMixtureModel(Module):
             # logsumexp over all components to get overall LL
             train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0)
 
+            # hyperprior loss over component weights
+            train_hyperprior_loss = -hyperprior.log_prob(
+                torch.exp(exp_normalize(self.component_weights))
+            )
+
             # add in random loss, backprop, and take gradient step
             train_random_loss = ll.random_loss()
-            train_loss = train_fixed_loss + train_random_loss
+            train_loss = train_fixed_loss + train_random_loss + train_hyperprior_loss
             train_loss.backward()
             optimizer.step()
+
+            # train logging
             if i % verbosity == 0:
-                LOG.info(f"raw train fixed loss: {np.round(train_fixed_loss.item(), 5)}")
-                LOG.info(f"component weights: {torch.exp(exp_normalize(self.component_weights))}")
-                LOG.info(f"per-component loss: {torch.sum(train_ll, -1)}")
+                LOG.info(
+                    f"raw train fixed loss: {np.round(train_fixed_loss.item(), 5)}"
+                )
+                LOG.info(
+                    f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
+                )
+                LOG.info(f"per-component loss: {-torch.sum(train_ll, -1)}")
 
                 LOG.info(
-                    f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / len(train_avg_annotations), 5)}"
+                    f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
                 )
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
                 )
-                # self.per_item_posterior(per_prop_train_ll, train_items_by_property, n_components)
+                LOG.info(
+                    f"Epoch {i} hyperprior loss: {np.round(train_hyperprior_loss.item(), 5)}"
+                )
 
             # eval
             with torch.no_grad():
@@ -610,15 +620,33 @@ class MultiviewMixtureModel(Module):
 
                 if i % verbosity == 0:
                     LOG.info(
-                        f"            dev fixed loss: {np.round(dev_fixed_loss.item() / len(dev_avg_annotations), 5)}"
+                        f"Epoch {i} dev fixed loss: {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
                     )
 
                 if i and dev_fixed_loss > prev_dev_fixed_loss:
                     LOG.info("No improvement in dev LL. Stopping early.")
+                    LOG.info(
+                        f"Final component weights (epoch {i}): {torch.exp(exp_normalize(self.component_weights))}"
+                    )
+                    LOG.info(
+                        f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
+                    )
+                    LOG.info(
+                        f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
+                    )
                     return self.eval()
                 prev_dev_fixed_loss = dev_fixed_loss
 
-        # Max iterations reached
+        LOG.info(f"Max iterations reached")
+        LOG.info(
+            f"Final component weights (epoch {i}): {torch.exp(exp_normalize(self.component_weights))}"
+        )
+        LOG.info(
+            f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
+        )
+        LOG.info(
+            f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
+        )
         return self.eval()
 
 
