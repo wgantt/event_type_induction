@@ -18,7 +18,7 @@ from event_type_induction.utils import *
 
 
 LOG = setup_logging()
-MODEL_DIR = "/data/wgantt/event_type_induction/"
+MODEL_DIR = "/data/wgantt/event_type_induction/checkpoints"
 
 # TODO: modularize
 
@@ -337,7 +337,7 @@ class GMM:
 
 class MultiviewMixtureModel(Module):
     def __init__(self, uds: UDSCorpus, random_seed: int = 42, device: str = "cpu"):
-        super().__init__()
+        super(MultiviewMixtureModel, self).__init__()
         self.uds = uds
         self.random_seed = random_seed
         self.s_metadata = self.uds.metadata.sentence_metadata

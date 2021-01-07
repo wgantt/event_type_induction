@@ -1,5 +1,6 @@
 import inspect
 import numpy as np
+import pandas as pd
 import os
 import torch
 
@@ -440,7 +441,7 @@ def save_model_with_args(params, model, initargs, ckpt_dir, file_name):
 
 def load_model_with_args(cls, ckpt_path):
     ckpt_dict = torch.load(ckpt_path)
-    hyper_params = ckpt_dict["curr_hyper"]
+    hyper_params = ckpt_dict.get("curr_hyper", {})
 
     # Model has to be loaded with a UDSCorpus object
     uds = UDSCorpus(version="2.0", annotation_format="raw")
@@ -448,5 +449,24 @@ def load_model_with_args(cls, ckpt_path):
     hyper_params["uds"] = uds
 
     model = cls(**hyper_params)
-    model.load_state_dict(ckpt_dict["state_dict"])
+    if "state_dict" in ckpt_dict:
+        model.load_state_dict(ckpt_dict["state_dict"])
+    else:
+        model.load_state_dict(ckpt_dict)
     return model, hyper_params
+
+def dump_property_means(mus: torch.nn.ParameterDict, outfile: str) -> None:
+    # create dataframe with components as rows and properties
+    # as columns. Each dimension of a categorical property gets
+    # its own column.
+    df = pd.DataFrame()
+    for prop, mean in mus.items():
+        if mean.shape[-1] == 1: # binary property
+            df[prop] = torch.exp(mean[:,0]).detach().numpy()
+        else:
+            for i in range(mean.shape[-1]):
+                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:,i]).detach().numpy()
+    # write to file
+    with open(outfile, "w") as f:
+        df.to_csv(outfile, index=False)
+
