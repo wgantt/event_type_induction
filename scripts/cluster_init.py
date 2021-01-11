@@ -98,9 +98,6 @@ class GMM:
         # Unique annotators for each property
         unique_annotators_by_property = defaultdict(set)
 
-        # Item name (node or edge) corresponding to each annotation in annotations_by_property
-        items_by_property = defaultdict(list)
-
         # The length of a full annotation vector
         anno_vec_len = 0
 
@@ -201,7 +198,6 @@ class GMM:
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
-                                items_by_property[p].append(item)
                                 total_annos += 1
                         else:
                             # No annotation for this property, so just use the mean
@@ -234,7 +230,6 @@ class GMM:
                 for p, v in annotators_by_property.items()
             },
             unique_annotators_by_property,
-            items_by_property,
         )
 
     def get_event_annotations(
@@ -267,36 +262,83 @@ class GMM:
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
     ):
-        # TODO: UPDATE
         all_annotations = []
         annotations_by_property = defaultdict(list)
+        annotators_by_property = defaultdict(list)
+        unique_annotators_by_property = defaultdict(set)
         confidences_by_property = defaultdict(list)
         properties_to_indices = {}
         anno_vec_len = 0
+        total_annos = 0
+
         for dname in data:
             graph = self.uds.documents[dname].document_graph
             for anno in graph.edges.values():
                 anno_vec = []
+                # assert "time" in anno, f"no time annotations found for document {dname}"
+                # temporary while I don't have pred-arg document annotations
+                if "mereology" in anno and "time" not in anno:
+                    continue
+
                 for subspace in sorted(SUBSPACES_BY_TYPE[Type.RELATION]):
                     for p in sorted(self.d_metadata.properties(subspace)):
                         vec = np.zeros(1)
                         n_annos = 0
+
+                        # Associate this property with a range of indices in the type vector
                         if p not in properties_to_indices:
                             properties_to_indices[p] = np.array(
                                 [anno_vec_len, anno_vec_len + 1]
                             )
                             anno_vec_len += 1
-                        if subspace in anno:
-                            for value in anno[subspace][p]["value"].values():
+
+                        # Collect annotation and confidence
+                        if subspace in anno and p in anno[subspace]:
+                            for a, value in sorted(anno[subspace][p]["value"].items()):
+                                # Get confidence for this annotation
+                                conf = anno[subspace][p]["confidence"][a]
+                                ridit_conf = confidences[a].get(conf, 1)
+
+                                # Get value
                                 vec += value
+
+                                # Bookkeeping
                                 n_annos += 1
+                                total_annos += 1
+                                annotations_by_property[p].append(value)
+                                annotator_num = int(a.split("-")[-1])
+                                annotators_by_property[p].append(annotator_num)
+                                unique_annotators_by_property[p].add(annotator_num)
+                                confidences_by_property[p].append(ridit_conf)
+                        else:
+                            # Since mereology annotations were conditioned on
+                            # temporal containment, if they don't occur in a
+                            # given annotation, there cannot be mereological
+                            # containment, so we default to zero.
+                            assert subspace == "mereology"
+                            vec = torch.zeros(1)
+
+                        # Average annotation for this item
                         anno_vec.append(vec / max(n_annos, 1))
                 all_annotations.append(np.concatenate(anno_vec))
+
         return (
+            total_annos,
             np.stack(all_annotations),
             properties_to_indices,
-            annotations_by_property,
-            confidences_by_property,
+            {
+                p: torch.FloatTensor(np.stack(v))
+                for p, v in annotations_by_property.items()
+            },
+            {
+                p: torch.FloatTensor(np.array(v))
+                for p, v in confidences_by_property.items()
+            },
+            {
+                p: torch.LongTensor(np.array(v))
+                for p, v in annotators_by_property.items()
+            },
+            unique_annotators_by_property,
         )
 
     def fit(
@@ -307,7 +349,11 @@ class GMM:
         confidences: Dict[str, Dict[int, float]],
     ) -> GaussianMixture:
         gmm = GaussianMixture(n_components, random_state=self.random_seed)
-        property_means = get_property_means(self.uds, data, t)
+        if t == Type.RELATION:
+            property_means = None
+        else:
+            property_means = get_property_means(self.uds, data, t)
+
         (
             total_annos,
             average_annotations,
@@ -316,7 +362,6 @@ class GMM:
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
-            items_by_property,
         ) = self.annotation_func_by_type[t](data, confidences, property_means)
 
         # Probably shouldn't be returning all these things from a call to
@@ -331,7 +376,6 @@ class GMM:
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
-            items_by_property,
         )
 
 
@@ -359,26 +403,12 @@ class MultiviewMixtureModel(Module):
         self.random_effects = None
         self.device = device
 
-    def _data_iter(self, datum: str, t: Type) -> Iterator:
-        if t == Type.RELATION:
-            g = self.uds.documents[datum].document_graph
-            for edge, anno in g.edges.items():
-                yield edge, anno
-        else:
-            if t == Type.EVENT:
-                for node, anno in self.uds[datum].predicate_nodes.items():
-                    yield node, anno
-            elif t == Type.PARTICIPANT:
-                for node, anno in self.uds[datum].argument_nodes.items():
-                    yield node, anno
-            elif t == Type.ROLE:
-                for edge, anno in self.uds[datum].semantics_edges().items():
-                    yield edge, anno
-            else:
-                raise ValueError(f"Unrecognized type {t}!")
-
     def _init_mus(
-        self, t: Type, gmm_means: np.ndarray, props_to_indices: Dict[str, np.ndarray]
+        self,
+        t: Type,
+        gmm_means: np.ndarray,
+        props_to_indices: Dict[str, np.ndarray],
+        n_components: int,
     ) -> None:
         mu_dict = {}
         rel_start = np.inf
@@ -389,51 +419,35 @@ class MultiviewMixtureModel(Module):
             else:
                 metadata = self.s_metadata
             for p in metadata.properties(subspace):
-
+                if "rel-" in p:
+                    continue
                 if (t == Type.EVENT and "arg" in p) or (
                     t == Type.PARTICIPANT and "pred" in p
                 ):
-                    continue
-
-                if "rel-" in p:
-                    indices = props_to_indices[p]
-                    if indices[0] < rel_start:
-                        rel_start = indices[0]
-                    if indices[1] > rel_end:
-                        rel_end = indices[1]
                     continue
 
                 start, end = props_to_indices[p]
                 mu = torch.log(torch.FloatTensor(gmm_means[:, start:end]))
                 mu_dict[p.replace(".", "-")] = Parameter(mu)
         if t == Type.RELATION:
-            time_mu = torch.log(torch.FloatTensor(gmm_means[:, rel_start:rel_end]))
-            mu_dict["time"] = Parameter(time_mu)
+            # time_mu = torch.log(torch.FloatTensor(gmm_means[:, rel_start:rel_end]))
+            mu_dict["time-univariate_mu"] = Parameter(
+                torch.cat([torch.FloatTensor([50]) for _ in range(n_components)])
+            )
+            mu_dict["time-bivariate_mu"] = Parameter(
+                torch.stack([torch.FloatTensor([50, 50]) for _ in range(n_components)])
+            )
         self.mus = ParameterDict(mu_dict).to(self.device)
 
-    def _init_covs(
-        self, t: Type, gmm_covs: np.ndarray, props_to_indices: Dict[str, np.ndarray]
-    ) -> None:
-        if t != Type.RELATION:
-            raise ValueError(
-                "Covariance matrices should be initialized only for relation types"
-            )
-        start = np.inf
-        end = -np.inf
-        for p, indices in props_to_indices.items():
-            if "rel" in p:
-                if indices[0] < start:
-                    start = indices[0]
-                if indices[1] > end:
-                    end = indices[1]
-        covs = torch.FloatTensor(gmm_covs[:, start:end, start:end])
-
-        # Avoid singular matrices
-        for i, c in enumerate(covs):
-            if torch.matrix_rank(c).item() < len(c):
-                covs[i] += torch.eye(len(c))
-
-        self.covs = Parameter(covs).to(self.device)
+    def _init_covs(self, n_components: int, sigma: int = 10) -> None:
+        cov_dict = {}
+        univariate_sigma = torch.ones(n_components) * sigma
+        bivariate_sigma = torch.stack(
+            [sigma * torch.eye(2) for _ in range(n_components)]
+        )
+        cov_dict["time-univariate_sigma"] = Parameter(univariate_sigma)
+        cov_dict["time-bivariate_sigma"] = Parameter(bivariate_sigma)
+        self.covs = ParameterDict(cov_dict).to(self.device)
 
     def _get_annotator_ridits(
         self, data: List[str], t: Type
@@ -473,13 +487,16 @@ class MultiviewMixtureModel(Module):
             train_confidences_by_property,
             train_annotators_by_property,
             train_unique_annotators_by_property,
-            train_items_by_property,
         ) = train_gmm.fit(data["train"], t, n_components, train_confidences)
         LOG.info("...GMM fitting complete")
 
         LOG.info("Loading dev data...")
         dev_confidences = self._get_annotator_ridits(data["dev"], t)
-        dev_property_means = get_property_means(self.uds, data["dev"], t)
+
+        if t == Type.RELATION:
+            dev_property_means = None
+        else:
+            dev_property_means = get_property_means(self.uds, data["dev"], t)
 
         (
             dev_total_annos,
@@ -489,7 +506,6 @@ class MultiviewMixtureModel(Module):
             dev_confidences_by_property,
             dev_annotators_by_property,
             dev_unique_annotators_by_property,
-            dev_items_by_property,
         ) = train_gmm.annotation_func_by_type[t](
             data["dev"], dev_confidences, dev_property_means
         )
@@ -497,14 +513,13 @@ class MultiviewMixtureModel(Module):
         LOG.info(f"total train annotations: {train_total_annos}")
         LOG.info(f"total dev annotations: {dev_total_annos}")
 
-        # TODO: make same assertion for dev
+        # verify that annotations and confidence values are as expected
         assert (
             train_annotations_by_property.keys() == train_confidences_by_property.keys()
         )
         for p in train_annotations_by_property:
             anno_len = len(train_annotations_by_property[p])
             conf_len = len(train_confidences_by_property[p])
-            item_len = len(train_items_by_property[p])
             num_annotators = len(train_annotators_by_property[p])
             assert (
                 anno_len == conf_len
@@ -512,7 +527,6 @@ class MultiviewMixtureModel(Module):
             assert (
                 num_annotators == anno_len
             ), f"mismatched annotation and annotator lengths ({anno_len} and {num_annotators})"
-            assert item_len == anno_len
 
         # Determine which annotators in dev are also in train
         # This is necessary for determining the appropriate random
@@ -537,14 +551,16 @@ class MultiviewMixtureModel(Module):
             metadata = self.d_metadata
 
             # Initialize covariance matrices
-            self._init_covs(t, gmm.covariances_, train_properties_to_indices)
+            self._init_covs(n_components)
         else:
             metadata = self.s_metadata
 
         # Initialize Likelihood module, property means,
         # annotator random effects, and component weights
-        ll = self.type_to_likelihood[t](train_confidences, metadata, self.device)
-        self._init_mus(t, gmm.means_, train_properties_to_indices)
+        ll = self.type_to_likelihood[t](
+            train_confidences, metadata, n_components, self.device
+        )
+        self._init_mus(t, gmm.means_, train_properties_to_indices, n_components)
         self.random_effects = ll.random_effects
         self.component_weights = Parameter(torch.log(torch.FloatTensor(gmm.weights_)))
 
@@ -557,11 +573,12 @@ class MultiviewMixtureModel(Module):
         for i in range(iterations):
 
             # training
-            per_prop_train_ll, train_ll = ll(
+            _, train_ll = ll(
                 self.mus,
                 train_annotations_by_property,
                 train_annotators_by_property,
                 train_confidences_by_property,
+                covs=self.covs,
             )
 
             # sum over per-property annotations
@@ -606,13 +623,14 @@ class MultiviewMixtureModel(Module):
 
             # eval
             with torch.no_grad():
-                per_prop_dev_ll, dev_ll = ll(
+                _, dev_ll = ll(
                     self.mus,
                     dev_annotations_by_property,
                     dev_annotators_by_property,
                     dev_confidences_by_property,
                     train_unique_annotators_by_property,
                     dev_annotators_in_train,
+                    covs=self.covs,
                 )
                 dev_fixed_loss = torch.sum(dev_ll, -1)
                 dev_fixed_loss += self.component_weights
@@ -657,10 +675,19 @@ def main(args):
     mmm = MultiviewMixtureModel(uds)
 
     # Define train and dev splits
-    train = [s for s in uds if "train" in s]
-    dev = [s for s in uds if "dev" in s]
-    data = {"train": train, "dev": dev}
     t = STR_TO_TYPE[args.type.upper()]
+
+    if t == Type.RELATION:
+        train = list(
+            set([graph.document_id for name, graph in uds.items() if "train" in name])
+        )
+        dev = list(
+            set([graph.document_id for name, graph in uds.items() if "dev" in name])
+        )
+    else:
+        train = [s for s in uds if "train" in s]
+        dev = [s for s in uds if "dev" in s]
+    data = {"train": train, "dev": dev}
 
     LOG.info(
         f"Fitting mixture model with all types in range {args.min_types} to {args.max_types}, inclusive"

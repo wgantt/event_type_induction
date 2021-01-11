@@ -118,7 +118,7 @@ def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
     return splits
 
 
-def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
+def get_item_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
     """Returns an iterator over sentence graph nodes or edges"""
     if t == Type.EVENT:
         return graph.predicate_nodes.items()
@@ -130,14 +130,10 @@ def get_type_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
         raise ValueError(f"Unknown type {t}!")
 
 
-def get_property_means(
+def get_sentence_property_means(
     uds: UDSCorpus, data: List[str], t: Type
 ) -> Dict[str, np.ndarray]:
-    """Get the mean annotation for each property
-
-    TODO: modify to handle relation types
-
-    """
+    """Get the mean annotation for all properties for a given type"""
     annotations_by_property = defaultdict(list)
 
     if t == Type.EVENT:
@@ -150,7 +146,7 @@ def get_property_means(
 
     for sname in data:
         graph = uds[sname]
-        for item, anno in get_type_iter(graph, t):
+        for item, anno in get_item_iter(graph, t):
             for subspace in SUBSPACES_BY_TYPE[t]:
                 meta = uds.metadata.sentence_metadata
                 for p in meta.properties(subspace):
@@ -455,18 +451,18 @@ def load_model_with_args(cls, ckpt_path):
         model.load_state_dict(ckpt_dict)
     return model, hyper_params
 
+
 def dump_property_means(mus: torch.nn.ParameterDict, outfile: str) -> None:
     # create dataframe with components as rows and properties
     # as columns. Each dimension of a categorical property gets
     # its own column.
     df = pd.DataFrame()
     for prop, mean in mus.items():
-        if mean.shape[-1] == 1: # binary property
-            df[prop] = torch.exp(mean[:,0]).detach().numpy()
+        if mean.shape[-1] == 1:  # binary property
+            df[prop] = torch.exp(mean[:, 0]).detach().numpy()
         else:
             for i in range(mean.shape[-1]):
-                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:,i]).detach().numpy()
+                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:, i]).detach().numpy()
     # write to file
     with open(outfile, "w") as f:
         df.to_csv(outfile, index=False)
-
