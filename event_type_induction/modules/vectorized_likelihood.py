@@ -312,6 +312,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
     E1_LOCKED = 1
     E2_LOCKED = 2
 
+    DIFFERENT_MIDPOINTS = 0
+    SAME_MIDPOINT = 1
+
     STARTPOINT_LOCK_VAL = 0
     ENDPOINT_LOCK_VAL = 100
 
@@ -572,7 +575,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         same_midpoint_end_prob = Categorical(self.p_lock_end).log_prob(
             same_midpoint_end_locked[:, None]
         )
-        same_midpoint_mid_prob = Bernoulli(self.p_lock_mid).log_prob(1)
+        same_midpoint_mid_prob = Bernoulli(self.p_lock_mid).log_prob(self.SAME_MIDPOINT)
         same_midpoint_prob = (
             Normal(mus["time-univariate_mu"], covs["time-univariate_sigma"]).log_prob(
                 same_midpoint[..., None]
@@ -593,7 +596,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints_end_prob = Categorical(self.p_lock_end).log_prob(
             diff_midpoints_end_locked[:, None]
         )
-        diff_midpoints_mid_prob = Bernoulli(self.p_lock_mid).log_prob(0)
+        diff_midpoints_mid_prob = Bernoulli(self.p_lock_mid).log_prob(self.DIFFERENT_MIDPOINTS)
         diff_midpoints_prob = (
             MultivariateNormal(mus["time-bivariate_mu"], covs["time-bivariate_sigma"])
             .log_prob(diff_midpoints[:, None, None, :])

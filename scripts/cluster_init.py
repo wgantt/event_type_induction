@@ -106,7 +106,7 @@ class GMM:
 
         for sname in data:
             graph = self.uds[sname]
-            for item, anno in get_type_iter(graph, t):
+            for item, anno in get_item_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
 
@@ -352,7 +352,7 @@ class GMM:
         if t == Type.RELATION:
             property_means = None
         else:
-            property_means = get_property_means(self.uds, data, t)
+            property_means = get_sentence_property_means(self.uds, data, t)
 
         (
             total_annos,
@@ -364,11 +364,14 @@ class GMM:
             unique_annotators_by_property,
         ) = self.annotation_func_by_type[t](data, confidences, property_means)
 
+        gmm = gmm.fit(average_annotations)
+        LOG.info(f"GMM average train LL for {n_components} components: {gmm.score(average_annotations)}")
+
         # Probably shouldn't be returning all these things from a call to
         # "fit", but didn't want to have to separately call the annotation
         # getter function again
         return (
-            gmm.fit(average_annotations),
+            gmm,
             total_annos,
             average_annotations,
             properties_to_indices,
@@ -496,7 +499,7 @@ class MultiviewMixtureModel(Module):
         if t == Type.RELATION:
             dev_property_means = None
         else:
-            dev_property_means = get_property_means(self.uds, data["dev"], t)
+            dev_property_means = get_sentence_property_means(self.uds, data["dev"], t)
 
         (
             dev_total_annos,
@@ -554,6 +557,7 @@ class MultiviewMixtureModel(Module):
             self._init_covs(n_components)
         else:
             metadata = self.s_metadata
+            self.covs = None
 
         # Initialize Likelihood module, property means,
         # annotator random effects, and component weights
@@ -581,8 +585,13 @@ class MultiviewMixtureModel(Module):
                 covs=self.covs,
             )
 
-            # sum over per-property annotations
-            train_fixed_loss = torch.sum(train_ll, -1)
+            if t == Type.RELATION:
+                train_fixed_loss = train_ll
+            else:
+                # sum over per-property annotations
+                # TODO: why not do this inside the likelihood,
+                #       as for relations?
+                train_fixed_loss = torch.sum(train_ll, -1)
 
             # add in prior over components
             train_fixed_loss += self.component_weights
@@ -632,7 +641,11 @@ class MultiviewMixtureModel(Module):
                     dev_annotators_in_train,
                     covs=self.covs,
                 )
-                dev_fixed_loss = torch.sum(dev_ll, -1)
+
+                if t == Type.RELATION:
+                    dev_fixed_loss = dev_ll
+                else:
+                    dev_fixed_loss = torch.sum(dev_ll, -1)
                 dev_fixed_loss += self.component_weights
                 dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0)
 
