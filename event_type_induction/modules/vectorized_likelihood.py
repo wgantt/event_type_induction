@@ -3,6 +3,7 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from event_type_induction.constants import *
 from event_type_induction.utils import exp_normalize
+from itertools import combinations
 from overrides import overrides
 from torch import Tensor, FloatTensor, randn, log
 from torch.distributions import (
@@ -365,13 +366,18 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 prop_name = p.replace(".", "-")
                 random_effects[prop_name] = random_shift
 
+        # TODO: implement
         """
-        # Each of the two start- and endpoints in temporal relations are
-        # treated as separate properties, but we model them together as
-        # a single 4-tuple property
-        for annotator in sorted(self.metadata.annotators("time")):
-            # TODO: maybe initialize with greater variance?
-            random_effects["time"][annotator] = Parameter(torch.randn(4))
+        time_annotators = self.metadata.annotators("time")
+        max_annotator_idx = max(
+            [int(s.split("-")[-1]) for s in subspace_annotators]
+        )
+        num_time_annotators = max(len(time_annotators), max_annotator_idx + 1)
+        random_effects["time-lock_start"] = None
+        random_effects["time-lock_end"] = None
+        random_effects["time-lock_mid"] = None
+        random_effects["time-same_midpoint"] = None
+        random_effects["time-different_midpoints"] = None
         """
 
         self.random_effects = ParameterDict(random_effects).to(self.device)
@@ -471,18 +477,34 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
         # Now, we identify items where at least one start point and
         # one end point are free (i.e. not locked).
+        e1_start_and_e1_end_free = ~(e1_start_locked | e1_end_locked)
+        e2_start_and_e2_end_free = ~(e2_start_locked | e2_end_locked)
         e1_start_and_e2_end_free = ~(e1_start_locked | e2_end_locked)
         e2_start_and_e1_end_free = ~(e2_start_locked | e1_end_locked)
 
         # Verify that these items split into disjoint sets
-        assert not any(e1_start_and_e2_end_free & e2_start_and_e1_end_free)
-        assert not any(e1_start_and_e2_end_free & start_and_end_locked)
-        assert not any(e2_start_and_e1_end_free & start_and_end_locked)
+        # Assertion was passing when last checked
+        """
+        free_endpoints = [
+            e1_start_and_e1_end_free,
+            e2_start_and_e2_end_free,
+            e1_start_and_e2_end_free,
+            e2_start_and_e1_end_free,
+        ]
+        for l1, l2 in combinations(free_endpoints, 2):
+            assert not any(l1 & l2)
+        """
 
         # The free start and endpoints may have either the same value
         # or different values and we treat these cases separately.
 
         # Same value
+        e1_start_and_e1_end_same = e1_start_and_e1_end_free & (
+            annotations["rel-start1"] == annotations["rel-end1"]
+        )
+        e2_start_and_e2_end_same = e2_start_and_e2_end_free & (
+            annotations["rel-start2"] == annotations["rel-end2"]
+        )
         e1_start_and_e2_end_same = e1_start_and_e2_end_free & (
             annotations["rel-start1"] == annotations["rel-end2"]
         )
@@ -491,66 +513,133 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         )
         same_midpoint = torch.cat(
             [
-                annotations["rel-start1"][e1_start_and_e2_end_same],
-                annotations["rel-start2"][e2_start_and_e1_end_same],
+                annotations["rel-start1"][
+                    e1_start_and_e1_end_same | e1_start_and_e2_end_same
+                ],
+                annotations["rel-start2"][
+                    e2_start_and_e2_end_same | e2_start_and_e1_end_same
+                ],
             ]
         )
         same_midpoint_conf = torch.cat(
             [
-                confidences["rel-start1"][e1_start_and_e2_end_same],
-                confidences["rel-start2"][e2_start_and_e1_end_same],
+                confidences["rel-start1"][
+                    e1_start_and_e1_end_same | e1_start_and_e2_end_same
+                ],
+                confidences["rel-start2"][
+                    e2_start_and_e2_end_same | e2_start_and_e1_end_same
+                ],
             ]
         )
         same_midpoint_start_locked = torch.cat(
             [
-                start_locked[e1_start_and_e2_end_same],
-                start_locked[e2_start_and_e1_end_same],
+                start_locked[e1_start_and_e1_end_same | e1_start_and_e2_end_same],
+                start_locked[e2_start_and_e2_end_same | e2_start_and_e1_end_same],
             ]
         )
         same_midpoint_end_locked = torch.cat(
             [
-                end_locked[e1_start_and_e2_end_same],
-                end_locked[e2_start_and_e1_end_same],
+                end_locked[e1_start_and_e1_end_same | e1_start_and_e2_end_same],
+                end_locked[e2_start_and_e2_end_same | e2_start_and_e1_end_same],
             ]
         )
 
-        # Different value
+        # Different value: There are four possible pairs of endpoints with differing
+        # values and each must be separately extracted from the annotations
+        e1_start_and_e1_end_diff = e1_start_and_e1_end_free & ~e1_start_and_e1_end_same
         e1_start_and_e2_end_diff = e1_start_and_e2_end_free & ~e1_start_and_e2_end_same
         e2_start_and_e1_end_diff = e2_start_and_e1_end_free & ~e2_start_and_e1_end_same
+        e2_start_and_e2_end_diff = e2_start_and_e2_end_free & ~e2_start_and_e2_end_same
 
-        # Midpoints = e1_start, e2_end
+        # Assert the above four lists constitute disjoint sets of items
+        # Assertion was passing when last checked
+        """
+        different_endpoints = [
+            e1_start_and_e1_end_diff,
+            e1_start_and_e2_end_diff,
+            e2_start_and_e1_end_diff,
+            e2_start_and_e2_end_diff,
+        ]
+        for l1, l2 in combinations(different_endpoints, 2):
+            assert not any(l1 & l2)
+        """
+
+        # 1. Midpoints = e1_start, e1_end
         diff_midpoints1 = torch.stack(
+            [
+                annotations["rel-start1"][e1_start_and_e1_end_diff],
+                annotations["rel-end1"][e1_start_and_e1_end_diff],
+            ],
+            dim=1,
+        )
+        diff_midpoints1_start_locked = start_locked[e1_start_and_e1_end_diff]
+        diff_midpoints1_end_locked = end_locked[e1_start_and_e1_end_diff]
+        diff_midpoints1_conf = confidences["rel-start1"][e1_start_and_e1_end_diff]
+
+        # 2. Midpoints = e1_start, e2_end
+        diff_midpoints2 = torch.stack(
             [
                 annotations["rel-start1"][e1_start_and_e2_end_diff],
                 annotations["rel-end2"][e1_start_and_e2_end_diff],
             ],
             dim=1,
         )
-        diff_midpoints1_start_locked = start_locked[e1_start_and_e2_end_diff]
-        diff_midpoints1_end_locked = end_locked[e1_start_and_e2_end_diff]
-        diff_midpoints1_conf = confidences["rel-start1"][e1_start_and_e2_end_diff]
+        diff_midpoints2_start_locked = start_locked[e1_start_and_e2_end_diff]
+        diff_midpoints2_end_locked = end_locked[e1_start_and_e2_end_diff]
+        diff_midpoints2_conf = confidences["rel-start1"][e1_start_and_e2_end_diff]
 
-        # Midpoints = e2_start, e1_end
-        diff_midpoints2 = torch.stack(
+        # 3. Midpoints = e2_start, e1_end
+        diff_midpoints3 = torch.stack(
             [
                 annotations["rel-start2"][e2_start_and_e1_end_diff],
                 annotations["rel-end1"][e2_start_and_e1_end_diff],
             ],
             dim=1,
         )
-        diff_midpoints2_start_locked = start_locked[e2_start_and_e1_end_diff]
-        diff_midpoints2_end_locked = end_locked[e2_start_and_e1_end_diff]
-        diff_midpoints2_conf = confidences["rel-start2"][e2_start_and_e1_end_diff]
+        diff_midpoints3_start_locked = start_locked[e2_start_and_e1_end_diff]
+        diff_midpoints3_end_locked = end_locked[e2_start_and_e1_end_diff]
+        diff_midpoints3_conf = confidences["rel-start2"][e2_start_and_e1_end_diff]
+
+        # 4. Midpoints = e2_start, e2_end
+        diff_midpoints4 = torch.stack(
+            [
+                annotations["rel-start2"][e2_start_and_e2_end_diff],
+                annotations["rel-end2"][e2_start_and_e2_end_diff],
+            ],
+            dim=1,
+        )
+        diff_midpoints4_start_locked = start_locked[e2_start_and_e2_end_diff]
+        diff_midpoints4_end_locked = end_locked[e2_start_and_e2_end_diff]
+        diff_midpoints4_conf = confidences["rel-start2"][e2_start_and_e2_end_diff]
 
         # Combine
-        diff_midpoints = torch.cat([diff_midpoints1, diff_midpoints2])
+        diff_midpoints = torch.cat(
+            [diff_midpoints1, diff_midpoints2, diff_midpoints3, diff_midpoints4]
+        )
         diff_midpoints_start_locked = torch.cat(
-            [diff_midpoints1_start_locked, diff_midpoints2_start_locked]
+            [
+                diff_midpoints1_start_locked,
+                diff_midpoints2_start_locked,
+                diff_midpoints3_start_locked,
+                diff_midpoints4_start_locked,
+            ]
         )
         diff_midpoints_end_locked = torch.cat(
-            [diff_midpoints1_end_locked, diff_midpoints2_end_locked]
+            [
+                diff_midpoints1_end_locked,
+                diff_midpoints2_end_locked,
+                diff_midpoints3_end_locked,
+                diff_midpoints4_end_locked,
+            ]
         )
-        diff_midpoints_conf = torch.cat([diff_midpoints1_conf, diff_midpoints2_conf])
+        diff_midpoints_conf = torch.cat(
+            [
+                diff_midpoints1_conf,
+                diff_midpoints2_conf,
+                diff_midpoints3_conf,
+                diff_midpoints4_conf,
+            ]
+        )
 
         # Likelihood calculation
         # TODO: incorporate random effects
@@ -596,7 +685,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints_end_prob = Categorical(self.p_lock_end).log_prob(
             diff_midpoints_end_locked[:, None]
         )
-        diff_midpoints_mid_prob = Bernoulli(self.p_lock_mid).log_prob(self.DIFFERENT_MIDPOINTS)
+        diff_midpoints_mid_prob = Bernoulli(self.p_lock_mid).log_prob(
+            self.DIFFERENT_MIDPOINTS
+        )
         diff_midpoints_prob = (
             MultivariateNormal(mus["time-bivariate_mu"], covs["time-bivariate_sigma"])
             .log_prob(diff_midpoints[:, None, None, :])

@@ -365,7 +365,9 @@ class GMM:
         ) = self.annotation_func_by_type[t](data, confidences, property_means)
 
         gmm = gmm.fit(average_annotations)
-        LOG.info(f"GMM average train LL for {n_components} components: {gmm.score(average_annotations)}")
+        LOG.info(
+            f"GMM average train LL for {n_components} components: {gmm.score(average_annotations)}"
+        )
 
         # Probably shouldn't be returning all these things from a call to
         # "fit", but didn't want to have to separately call the annotation
