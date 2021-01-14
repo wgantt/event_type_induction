@@ -469,7 +469,7 @@ class MultiviewMixtureModel(Module):
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
-        iterations: int = 2500,
+        iterations: int = 5000,
         lr: float = 0.001,
         concentration: float = 2.5,
         verbosity: int = 10,
@@ -574,7 +574,6 @@ class MultiviewMixtureModel(Module):
         hyperprior = Dirichlet(torch.ones(n_components) * concentration)
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        prev_dev_ll = -np.inf
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
@@ -587,21 +586,18 @@ class MultiviewMixtureModel(Module):
                 covs=self.covs,
             )
 
-            if t == Type.RELATION:
-                train_fixed_loss = train_ll
-            else:
-                # sum over per-property annotations
-                # TODO: why not do this inside the likelihood,
-                #       as for relations?
-                train_fixed_loss = torch.sum(train_ll, -1)
+            # per-type likelihoods for all items
+            train_fixed_loss = train_ll
 
             # add in prior over components
-            train_fixed_loss += self.component_weights
+            train_fixed_loss += exp_normalize(self.component_weights)[:, None]
 
-            # logsumexp over all components to get overall LL
-            train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0)
+            # logsumexp over all components to get log-evidence for each item,
+            # then mean- or sum-reduce
+            # train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0).sum()
+            train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0).mean()
 
-            # hyperprior loss over component weights
+            # dirichlet hyperprior 
             train_hyperprior_loss = -hyperprior.log_prob(
                 torch.exp(exp_normalize(self.component_weights))
             )
@@ -615,15 +611,12 @@ class MultiviewMixtureModel(Module):
             # train logging
             if i % verbosity == 0:
                 LOG.info(
-                    f"raw train fixed loss: {np.round(train_fixed_loss.item(), 5)}"
-                )
-                LOG.info(
                     f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
                 )
-                LOG.info(f"per-component loss: {-torch.sum(train_ll, -1)}")
-
+                LOG.info(f"Epoch {i} train log prior: {self.component_weights.data}")
+                LOG.info(f"Epoch {i} train log likelihood: {train_ll.mean(-1)}")
                 LOG.info(
-                    f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
+                    f"Epoch {i} train fixed loss: {np.round(train_fixed_loss.item(), 5)}"
                 )
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
@@ -644,28 +637,30 @@ class MultiviewMixtureModel(Module):
                     covs=self.covs,
                 )
 
-                if t == Type.RELATION:
-                    dev_fixed_loss = dev_ll
-                else:
-                    dev_fixed_loss = torch.sum(dev_ll, -1)
-                dev_fixed_loss += self.component_weights
-                dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0)
+                # dev fixed loss computed the same way as train
+                dev_fixed_loss = dev_ll
+                dev_fixed_loss += exp_normalize(self.component_weights)[:, None]
+                # dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0).sum()
+                dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0).mean()
 
                 if i % verbosity == 0:
                     LOG.info(
-                        f"Epoch {i} dev fixed loss: {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
+                        f"Epoch {i} dev fixed loss: {np.round(dev_fixed_loss.item(), 5)}"
                     )
 
+                # stop early if no improvement in dev
                 if i and dev_fixed_loss > prev_dev_fixed_loss:
-                    LOG.info("No improvement in dev LL. Stopping early.")
+                    LOG.info(
+                        f"No improvement in dev LL for model with {n_components} components. Stopping early."
+                    )
                     LOG.info(
                         f"Final component weights (epoch {i}): {torch.exp(exp_normalize(self.component_weights))}"
                     )
                     LOG.info(
-                        f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
+                        f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item(), 5)}"
                     )
                     LOG.info(
-                        f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
+                        f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item(), 5)}"
                     )
                     return self.eval()
                 prev_dev_fixed_loss = dev_fixed_loss
@@ -675,10 +670,10 @@ class MultiviewMixtureModel(Module):
             f"Final component weights (epoch {i}): {torch.exp(exp_normalize(self.component_weights))}"
         )
         LOG.info(
-            f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item() / train_total_annos, 5)}"
+            f"Final train fixed loss (epoch {i}): {np.round(train_fixed_loss.item(), 5)}"
         )
         LOG.info(
-            f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item() / dev_total_annos, 5)}"
+            f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item(), 5)}"
         )
         return self.eval()
 
