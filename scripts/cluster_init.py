@@ -16,17 +16,11 @@ from event_type_induction.modules.vectorized_likelihood import *
 from scripts.setup_logging import setup_logging
 from event_type_induction.utils import *
 
-
 LOG = setup_logging()
-MODEL_DIR = "/data/wgantt/event_type_induction/checkpoints"
-
-# TODO: modularize
 
 
 class GMM:
-    def __init__(
-        self, uds: UDSCorpus, random_seed: int = 42,
-    ):
+    def __init__(self, uds: UDSCorpus, random_seed: int = 42, device: str = "cpu"):
         """Gaussian mixture model over UDS properties
 
         Parameters
@@ -35,11 +29,14 @@ class GMM:
             the UDSCorpus
         random_seed
             optional random seed to use for the mixture model
+        device
+            the device on which data tensors are to be created
         """
         self.uds = uds
         self.s_metadata = self.uds.metadata.sentence_metadata
         self.d_metadata = self.uds.metadata.document_metadata
         self.random_seed = random_seed
+        self.device = device
         self.str_to_category = {
             cat: idx
             for idx, cat in enumerate(
@@ -59,6 +56,7 @@ class GMM:
         data: List[str],
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
+        device: str = "cpu",
     ):
         """Retrieves annotations from a UDSCorpus for a specified type
 
@@ -78,6 +76,8 @@ class GMM:
         property_means
             pre-computed mean values for each property; these are used to
             impute missing annotations for each item
+        device
+            the device on which all the tensors are to be created
         """
         # Averaged annotations for each item
         all_annotations = []
@@ -95,6 +95,9 @@ class GMM:
         # Confidence scores for each annotation in annotations_by_property
         confidences_by_property = defaultdict(list)
 
+        # Items corresponding to each annotation in annotations_by_property
+        items_by_property = defaultdict(list)
+
         # Unique annotators for each property
         unique_annotators_by_property = defaultdict(set)
 
@@ -104,8 +107,11 @@ class GMM:
         # Total number of annotations
         total_annos = 0
 
-        for sname in data:
-            graph = self.uds[sname]
+        # Counts total nodes or edges
+        item_ctr = 0
+
+        for name in data:
+            graph = self.uds[name]
             for item, anno in get_item_iter(graph, t):
                 anno_vec = []
                 annotation_found = False
@@ -194,6 +200,7 @@ class GMM:
 
                                 # Raw annotations and confidences by property
                                 annotations_by_property[p].append(val)
+                                items_by_property[p].append(item_ctr)
                                 annotator_num = int(a.split("-")[-1])
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
@@ -213,20 +220,26 @@ class GMM:
                 if annotation_found:
                     all_annotations.append(np.concatenate(anno_vec))
 
+                item_ctr += 1
+
         return (
             total_annos,
             np.stack(all_annotations),
             properties_to_indices,
             {
-                p: torch.FloatTensor(np.stack(v))
+                p: torch.FloatTensor(np.stack(v)).to(device)
                 for p, v in annotations_by_property.items()
             },
             {
-                p: torch.FloatTensor(np.array(v))
+                p: torch.LongTensor(np.array(v)).to(device)
+                for p, v in items_by_property.items()
+            },
+            {
+                p: torch.FloatTensor(np.array(v)).to(device)
                 for p, v in confidences_by_property.items()
             },
             {
-                p: torch.LongTensor(np.array(v))
+                p: torch.LongTensor(np.array(v)).to(device)
                 for p, v in annotators_by_property.items()
             },
             unique_annotators_by_property,
@@ -237,46 +250,56 @@ class GMM:
         data: List[str],
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
+        device: str = "cpu",
     ):
-        return self.get_annotations(Type.EVENT, data, confidences, property_means)
+        return self.get_annotations(
+            Type.EVENT, data, confidences, property_means, device
+        )
 
     def get_participant_annotations(
         self,
         data: List[str],
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
+        device: str = "cpu",
     ):
-        return self.get_annotations(Type.PARTICIPANT, data, confidences, property_means)
+        return self.get_annotations(
+            Type.PARTICIPANT, data, confidences, property_means, device
+        )
 
     def get_role_annotations(
         self,
         data: List[str],
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
+        device: str = "cpu",
     ):
-        return self.get_annotations(Type.ROLE, data, confidences, property_means)
+        return self.get_annotations(
+            Type.ROLE, data, confidences, property_means, device
+        )
 
     def get_relation_annotations(
         self,
         data: List[str],
         confidences: Dict[str, Dict[int, float]],
         property_means: Dict[str, np.ndarray],
+        device: str = "cpu",
     ):
         all_annotations = []
         annotations_by_property = defaultdict(list)
+        items_by_property = defaultdict(list)
         annotators_by_property = defaultdict(list)
         unique_annotators_by_property = defaultdict(set)
         confidences_by_property = defaultdict(list)
         properties_to_indices = {}
         anno_vec_len = 0
         total_annos = 0
+        item_ctr = 0
 
         for dname in data:
             graph = self.uds.documents[dname].document_graph
-            for anno in graph.edges.values():
+            for edge, anno in sorted(graph.edges.items()):
                 anno_vec = []
-                # assert "time" in anno, f"no time annotations found for document {dname}"
-                # temporary while I don't have pred-arg document annotations
                 if "mereology" in anno and "time" not in anno:
                     continue
 
@@ -306,6 +329,7 @@ class GMM:
                                 n_annos += 1
                                 total_annos += 1
                                 annotations_by_property[p].append(value)
+                                items_by_property[p].append(item_ctr)
                                 annotator_num = int(a.split("-")[-1])
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
@@ -321,21 +345,26 @@ class GMM:
                         # Average annotation for this item
                         anno_vec.append(vec / max(n_annos, 1))
                 all_annotations.append(np.concatenate(anno_vec))
+                item_ctr += 1
 
         return (
             total_annos,
             np.stack(all_annotations),
             properties_to_indices,
             {
-                p: torch.FloatTensor(np.stack(v))
+                p: torch.FloatTensor(np.stack(v)).to(device)
                 for p, v in annotations_by_property.items()
             },
             {
-                p: torch.FloatTensor(np.array(v))
+                p: torch.LongTensor(np.array(v)).to(device)
+                for p, v in items_by_property.items()
+            },
+            {
+                p: torch.FloatTensor(np.array(v)).to(device)
                 for p, v in confidences_by_property.items()
             },
             {
-                p: torch.LongTensor(np.array(v))
+                p: torch.LongTensor(np.array(v)).to(device)
                 for p, v in annotators_by_property.items()
             },
             unique_annotators_by_property,
@@ -359,10 +388,13 @@ class GMM:
             average_annotations,
             properties_to_indices,
             annotations_by_property,
+            items_by_property,
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
-        ) = self.annotation_func_by_type[t](data, confidences, property_means)
+        ) = self.annotation_func_by_type[t](
+            data, confidences, property_means, self.device
+        )
 
         gmm = gmm.fit(average_annotations)
         LOG.info(
@@ -378,6 +410,7 @@ class GMM:
             average_annotations,
             properties_to_indices,
             annotations_by_property,
+            items_by_property,
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
@@ -435,12 +468,25 @@ class MultiviewMixtureModel(Module):
                 mu = torch.log(torch.FloatTensor(gmm_means[:, start:end]))
                 mu_dict[p.replace(".", "-")] = Parameter(mu)
         if t == Type.RELATION:
-            # time_mu = torch.log(torch.FloatTensor(gmm_means[:, rel_start:rel_end]))
+            # TODO: comment
             mu_dict["time-univariate_mu"] = Parameter(
                 torch.cat([torch.FloatTensor([50]) for _ in range(n_components)])
             )
             mu_dict["time-bivariate_mu"] = Parameter(
                 torch.stack([torch.FloatTensor([50, 50]) for _ in range(n_components)])
+            )
+            mu_dict["time-lock_start_mu"] = Parameter(
+                torch.log(
+                    Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((n_components,))
+                )
+            )
+            mu_dict["time-lock_end_mu"] = Parameter(
+                torch.log(
+                    Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((n_components,))
+                )
+            )
+            mu_dict["time-lock_mid_mu"] = Parameter(
+                torch.log(Uniform(0, 1).sample((n_components, 1)))
             )
         self.mus = ParameterDict(mu_dict).to(self.device)
 
@@ -469,7 +515,7 @@ class MultiviewMixtureModel(Module):
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
-        iterations: int = 5000,
+        iterations: int = 15000,
         lr: float = 0.001,
         concentration: float = 2.5,
         verbosity: int = 10,
@@ -482,13 +528,14 @@ class MultiviewMixtureModel(Module):
         )
         LOG.info("Fitting GMM...")
         train_confidences = self._get_annotator_ridits(data["train"], t)
-        train_gmm = GMM(self.uds)
+        train_gmm = GMM(self.uds, device=self.device)
         (
             gmm,
             train_total_annos,
             train_avg_annotations,
             train_properties_to_indices,
             train_annotations_by_property,
+            train_items_by_property,
             train_confidences_by_property,
             train_annotators_by_property,
             train_unique_annotators_by_property,
@@ -497,6 +544,13 @@ class MultiviewMixtureModel(Module):
 
         LOG.info("Loading dev data...")
         dev_confidences = self._get_annotator_ridits(data["dev"], t)
+
+        # Determine the total number of train items annotated across all properties
+        train_items = set()
+        for train_item in train_items_by_property.values():
+            train_items |= set(train_item.tolist())
+        total_train_items = len(train_items)
+        train_items = torch.LongTensor(list(train_items)).to(self.device)
 
         if t == Type.RELATION:
             dev_property_means = None
@@ -508,15 +562,24 @@ class MultiviewMixtureModel(Module):
             dev_avg_annotations,
             dev_properties_to_indices,
             dev_annotations_by_property,
+            dev_items_by_property,
             dev_confidences_by_property,
             dev_annotators_by_property,
             dev_unique_annotators_by_property,
         ) = train_gmm.annotation_func_by_type[t](
-            data["dev"], dev_confidences, dev_property_means
+            data["dev"], dev_confidences, dev_property_means, device=self.device
         )
+
+        # Determine the total number of dev items annotated across all properties
+        dev_items = set()
+        for dev_item in dev_items_by_property.values():
+            dev_items |= set(dev_item.tolist())
+        total_dev_items = len(dev_items)
+        dev_items = torch.LongTensor(list(dev_items)).to(self.device)
+
         LOG.info("...Complete.")
-        LOG.info(f"total train annotations: {train_total_annos}")
-        LOG.info(f"total dev annotations: {dev_total_annos}")
+        LOG.info(f"total train items: {total_train_items}")
+        LOG.info(f"total dev items: {total_dev_items}")
 
         # verify that annotations and confidence values are as expected
         assert (
@@ -568,10 +631,9 @@ class MultiviewMixtureModel(Module):
         )
         self._init_mus(t, gmm.means_, train_properties_to_indices, n_components)
         self.random_effects = ll.random_effects
-        self.component_weights = Parameter(torch.log(torch.FloatTensor(gmm.weights_)))
-
-        # Dirichlet hyperprior over component weights
-        hyperprior = Dirichlet(torch.ones(n_components) * concentration)
+        self.component_weights = Parameter(
+            torch.log(torch.FloatTensor(gmm.weights_)).to(self.device)
+        )
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         LOG.info(f"Beginning training for {iterations} epochs")
@@ -581,6 +643,7 @@ class MultiviewMixtureModel(Module):
             _, train_ll = ll(
                 self.mus,
                 train_annotations_by_property,
+                train_items_by_property,
                 train_annotators_by_property,
                 train_confidences_by_property,
                 covs=self.covs,
@@ -590,21 +653,18 @@ class MultiviewMixtureModel(Module):
             train_fixed_loss = train_ll
 
             # add in prior over components
-            train_fixed_loss += exp_normalize(self.component_weights)[:, None]
+            prior = exp_normalize(self.component_weights)[:, None]
+            train_fixed_loss[:, train_items] += prior
 
             # logsumexp over all components to get log-evidence for each item,
-            # then mean- or sum-reduce
-            # train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0).sum()
-            train_fixed_loss = -torch.logsumexp(train_fixed_loss, 0).mean()
-
-            # dirichlet hyperprior 
-            train_hyperprior_loss = -hyperprior.log_prob(
-                torch.exp(exp_normalize(self.component_weights))
+            # then mean-reduce
+            train_fixed_loss = (
+                -torch.logsumexp(train_fixed_loss, 0).sum() / total_train_items
             )
 
             # add in random loss, backprop, and take gradient step
             train_random_loss = ll.random_loss()
-            train_loss = train_fixed_loss + train_random_loss + train_hyperprior_loss
+            train_loss = train_fixed_loss + train_random_loss
             train_loss.backward()
             optimizer.step()
 
@@ -621,15 +681,20 @@ class MultiviewMixtureModel(Module):
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
                 )
-                LOG.info(
-                    f"Epoch {i} hyperprior loss: {np.round(train_hyperprior_loss.item(), 5)}"
-                )
+                """
+                LOG.info(f"Lock start: {self.mus['time-lock_start_mu']}")
+                LOG.info(f"Lock end: {self.mus['time-lock_end_mu']}")
+                LOG.info(f"Lock mid: {self.mus['time-lock_mid_mu']}")
+                LOG.info(f"univariate mu: {self.mus['time-univariate_mu']}")
+                LOG.info(f"bivariate mu: {self.mus['time-bivariate_mu']}")
+                """
 
             # eval
             with torch.no_grad():
                 _, dev_ll = ll(
                     self.mus,
                     dev_annotations_by_property,
+                    dev_items_by_property,
                     dev_annotators_by_property,
                     dev_confidences_by_property,
                     train_unique_annotators_by_property,
@@ -639,9 +704,10 @@ class MultiviewMixtureModel(Module):
 
                 # dev fixed loss computed the same way as train
                 dev_fixed_loss = dev_ll
-                dev_fixed_loss += exp_normalize(self.component_weights)[:, None]
-                # dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0).sum()
-                dev_fixed_loss = -torch.logsumexp(dev_fixed_loss, 0).mean()
+                dev_fixed_loss[:, dev_items] += prior
+                dev_fixed_loss = (
+                    -torch.logsumexp(dev_fixed_loss, 0).sum() / total_dev_items
+                )
 
                 if i % verbosity == 0:
                     LOG.info(
@@ -649,6 +715,7 @@ class MultiviewMixtureModel(Module):
                     )
 
                 # stop early if no improvement in dev
+                # if i and dev_fixed_loss > prev_dev_fixed_loss:
                 if i and dev_fixed_loss > prev_dev_fixed_loss:
                     LOG.info(
                         f"No improvement in dev LL for model with {n_components} components. Stopping early."
@@ -682,16 +749,14 @@ def main(args):
     # Load UDS and initialize the mixture model
     uds = UDSCorpus(version="2.0", annotation_format="raw")
     load_event_structure_annotations(uds)
-    mmm = MultiviewMixtureModel(uds)
 
     # Define train and dev splits
     t = STR_TO_TYPE[args.type.upper()]
-
     if t == Type.RELATION:
-        train = list(
+        train = sorted(
             set([graph.document_id for name, graph in uds.items() if "train" in name])
         )
-        dev = list(
+        dev = sorted(
             set([graph.document_id for name, graph in uds.items() if "dev" in name])
         )
     else:
@@ -702,16 +767,24 @@ def main(args):
     LOG.info(
         f"Fitting mixture model with all types in range {args.min_types} to {args.max_types}, inclusive"
     )
+    model_root = args.model_name if args.model_name is not None else t.name
     for n_components in range(args.min_types, args.max_types + 1):
-        # Fit the model
-        model_name = t.name + "-" + str(n_components) + ".pt"
+        # Initialize and fit the model
+        mmm = MultiviewMixtureModel(uds, device=args.device)
+        model_name = model_root + "-" + str(n_components) + ".pt"
         mmm = mmm.fit(data, t, n_components)
+
         # Save it
-        save_model(mmm.state_dict(), MODEL_DIR, model_name)
+        save_model(mmm.state_dict(), args.model_dir, model_name)
+
+        # Dump property means to file
+        if args.dump_means:
+            means_file = model_root + "-" + str(n_components) + ".csv"
+            means_file = os.path.join(args.model_dir, means_file)
+            dump_property_means(mmm.mus, means_file)
 
 
 if __name__ == "__main__":
-    # TODO: add more arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("type", type=str, help="the type to cluster on")
     parser.add_argument(
@@ -720,5 +793,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "max_types", type=int, help="maximum of range of numbers of types to try"
     )
+    parser.add_argument(
+        "--model_name", type=str, help="name for model checkpoint files"
+    )
+    parser.add_argument(
+        "--model_dir",
+        type=str,
+        default="/data/wgantt/event_type_induction/checkpoints/",
+        help="path to directory where checkpoint files are to be saved",
+    )
+    parser.add_argument(
+        "--dump_means",
+        action="store_true",
+        help="dump resulting property means to file",
+    )
+    parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     main(args)

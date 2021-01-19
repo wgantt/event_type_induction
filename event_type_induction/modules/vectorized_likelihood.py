@@ -1,5 +1,4 @@
 import torch
-from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from event_type_induction.constants import *
 from event_type_induction.utils import exp_normalize
@@ -18,7 +17,7 @@ from torch.nn import Module, Parameter, ParameterDict, ParameterList
 from typing import Any, Dict, Set, Tuple, Union
 
 
-class Likelihood(Module, metaclass=ABCMeta):
+class Likelihood(Module):
     def __init__(
         self,
         property_subspaces: Set[str],
@@ -27,7 +26,7 @@ class Likelihood(Module, metaclass=ABCMeta):
         n_components: int,
         device: str = "cpu",
     ):
-        """ABC for Event Type Induction Module likelihood computations
+        """Base class for vectorized Event Type Induction Module likelihood computations
 
         Parameters
         ----------
@@ -78,6 +77,13 @@ class Likelihood(Module, metaclass=ABCMeta):
             return Bernoulli(torch.sigmoid(torch.exp(mu) + random).squeeze())
         else:
             return Categorical(torch.softmax(torch.exp(mu) + random, -1).squeeze())
+
+    def _get_distribution2(self, mu):
+        """Generates an appropriate distribution given a mean and random effect"""
+        if mu.shape[-1] == 1:
+            return Bernoulli(torch.sigmoid(torch.exp(mu)).squeeze())
+        else:
+            return Categorical(torch.softmax(torch.exp(mu), -1).squeeze())
 
     def _get_prop_dim(self, subspace, prop):
         """Determines the appropriate dimension for a UDS property"""
@@ -134,14 +140,16 @@ class Likelihood(Module, metaclass=ABCMeta):
         self,
         mus: ParameterDict,
         annotations: Dict[str, torch.Tensor],
+        items: Dict[str, torch.Tensor],
         annotators: Dict[str, torch.Tensor],
         confidences: Dict[str, torch.Tensor],
         train_annotators: Dict[str, torch.Tensor] = None,
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
         covs: ParameterDict = None,
     ):
-        """Compute the likelihood for a single annotation for a set of subspaces"""
         likelihoods = {}
+        num_items = max([i[-1].item() for i in items.values()]) + 1
+        total_ll = torch.zeros(self.n_components, num_items).to(self.device)
         for p, anno in annotations.items():
             prop_name = p.replace(".", "-")
 
@@ -165,19 +173,16 @@ class Likelihood(Module, metaclass=ABCMeta):
             else:
                 random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
 
-            # Compute log likelihood (clipping to prevent underflow)
+            # Compute log likelihood (with clipping to prevent underflow)
             dist = self._get_distribution(mu, random)
-            ll = dist.log_prob(anno).to(self.device)
+            ll = dist.log_prob(anno)
             min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
             ll = torch.where(ll > min_ll, ll, min_ll,)
 
-            # Accumulate likelihood
-            if p in likelihoods:
-                likelihoods[p] += confidence * ll
-                total_ll += likelihoods[p]
-            else:
-                likelihoods[p] = confidence * ll
-                total_ll = likelihoods[p]
+            # Weight likelihoods by confidence, then accumulate
+            # by item (node/edge)
+            likelihoods[p] = ll * confidence
+            total_ll.index_add_(1, items[p], ll * confidence)
 
         return likelihoods, total_ll
 
@@ -209,7 +214,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         self,
         mus: ParameterDict,
         annotations: Dict[str, torch.Tensor],
-        annotators: torch.Tensor,
+        items: Dict[str, torch.Tensor],
+        annotators: Dict[str, torch.Tensor],
         confidences: Dict[str, torch.Tensor],
         train_annotators: Dict[str, torch.Tensor] = None,
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
@@ -218,6 +224,7 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         return super().forward(
             mus,
             annotations,
+            items,
             annotators,
             confidences,
             train_annotators,
@@ -249,7 +256,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         self,
         mus: ParameterDict,
         annotations: Dict[str, torch.Tensor],
-        annotators: torch.Tensor,
+        items: Dict[str, torch.Tensor],
+        annotators: Dict[str, torch.Tensor],
         confidences: Dict[str, torch.Tensor],
         train_annotators: Dict[str, torch.Tensor] = None,
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
@@ -258,6 +266,7 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         return super().forward(
             mus,
             annotations,
+            items,
             annotators,
             confidences,
             train_annotators,
@@ -289,7 +298,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
         self,
         mus: ParameterDict,
         annotations: Dict[str, torch.Tensor],
-        annotators: torch.Tensor,
+        items: Dict[str, torch.Tensor],
+        annotators: Dict[str, torch.Tensor],
         confidences: Dict[str, torch.Tensor],
         train_annotators: Dict[str, torch.Tensor] = None,
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
@@ -298,6 +308,7 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
         return super().forward(
             mus,
             annotations,
+            items,
             annotators,
             confidences,
             train_annotators,
@@ -335,16 +346,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             device=device,
         )
         self._initialize_random_effects()
-
-        # Probabilities for determining whether event start and
-        # endpoints are locked
-        self.p_lock_start = Parameter(
-            Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((self.n_components,))
-        )
-        self.p_lock_end = Parameter(
-            Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((self.n_components,))
-        )
-        self.p_lock_mid = Parameter(Uniform(0, 1).sample((self.n_components,)))
+        self.both_locked = torch.tensor([self.BOTH_LOCKED]).to(self.device)
 
     @overrides
     def _initialize_random_effects(self) -> None:
@@ -366,7 +368,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 prop_name = p.replace(".", "-")
                 random_effects[prop_name] = random_shift
 
-        # TODO: implement
+        # In-progress changes to random effects; commenting out for now
         """
         time_annotators = self.metadata.annotators("time")
         max_annotator_idx = max(
@@ -387,6 +389,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         self,
         mus: ParameterDict,
         annotations: Dict[str, torch.Tensor],
+        items: Dict[str, torch.Tensor],
         annotators: torch.Tensor,
         confidences: Dict[str, torch.Tensor],
         train_annotators: Dict[str, torch.Tensor] = None,
@@ -394,7 +397,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         covs: ParameterDict = None,
     ) -> Dict[str, Tensor]:
         likelihoods = {}
-        total_ll = torch.zeros(self.n_components)
+        num_items = max([i[-1].item() for i in items.values()]) + 1
+        total_ll = torch.zeros(self.n_components, num_items).to(self.device)
 
         # First, we handle all annotations other than temporal relations.
         # Currently, this is just mereological containment
@@ -411,7 +415,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             confidence = confidences[p]
 
             # Determine random intercepts
-            # TODO: make sure these are initialized appropriately
+            """
             if dev_annotators_in_train:
                 # If evaluating on dev, we don't have tuned random effects for
                 # annotators who weren't seen during training, so we use the
@@ -424,38 +428,35 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 random[~dev_annotators_in_train[p]] = mean_train_random_effect
             else:
                 random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            """
+            random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            random = torch.zeros(random.shape).to(self.device)
 
             # Compute log likelihood (clipping to prevent underflow)
             dist = self._get_distribution(mu, random)
-            ll = dist.log_prob(anno).to(self.device)
+            ll = dist.log_prob(anno)
             min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
             ll = torch.where(ll > min_ll, ll, min_ll,)
 
-            # Accumulate likelihood
-            if p in likelihoods:
-                likelihoods[p] += confidence * ll
-                total_ll += likelihoods[p]
-            else:
-                likelihoods[p] = confidence * ll
-                total_ll = likelihoods[p]
-
-        # Sum over individual annotations up to this point
-        # Next, we handle temporal relations annotations
-        total_ll = total_ll.sum(1)
+            likelihoods[p] = ll * confidence
+            total_ll.index_add_(1, items[p], ll * confidence)
 
         # Confidence values are the same for all four start-
-        # and endpoints for a given annotation; arbitrarily
-        # using property "rel-start1"
+        # and endpoints for a given annotation, so I arbitrarily
+        # am using the ones for "rel-start1"
         confidence = confidences["rel-start1"]
 
-        # At least one of the start points is always locked to
-        # zero. Determine which.
+        # For time annotations, at least one of the start points
+        # is always locked to zero. Here, we determine which.
         e1_start_locked = annotations["rel-start1"] == self.STARTPOINT_LOCK_VAL
         e2_start_locked = annotations["rel-start2"] == self.STARTPOINT_LOCK_VAL
         both_start_locked = e1_start_locked & e2_start_locked
         e1_start_only_locked = e1_start_locked & ~e2_start_locked
         e2_start_only_locked = ~e1_start_locked & e2_start_locked
-        start_locked = torch.zeros(annotations["rel-start1"].shape)
+
+        # For each annotation, start_locked indicates whether BOTH startpoints
+        # are locked to zero, only e1's startpoint, or only e2's startpoint
+        start_locked = torch.zeros(annotations["rel-start1"].shape).to(self.device)
         start_locked[both_start_locked] = self.BOTH_LOCKED
         start_locked[e1_start_only_locked] = self.E1_LOCKED
         start_locked[e2_start_only_locked] = self.E2_LOCKED
@@ -467,7 +468,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         both_end_locked = e1_end_locked & e2_end_locked
         e1_end_only_locked = e1_end_locked & ~e2_end_locked
         e2_end_only_locked = ~e1_end_locked & e2_end_locked
-        end_locked = torch.zeros(annotations["rel-start1"].shape)
+
+        # end_locked serves the same function as start_locked but for endpoints
+        end_locked = torch.zeros(annotations["rel-start1"].shape).to(self.device)
         end_locked[both_end_locked] = self.BOTH_LOCKED
         end_locked[e1_end_only_locked] = self.E1_LOCKED
         end_locked[e2_end_only_locked] = self.E2_LOCKED
@@ -482,23 +485,12 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         e1_start_and_e2_end_free = ~(e1_start_locked | e2_end_locked)
         e2_start_and_e1_end_free = ~(e2_start_locked | e1_end_locked)
 
-        # Verify that these items split into disjoint sets
-        # Assertion was passing when last checked
-        """
-        free_endpoints = [
-            e1_start_and_e1_end_free,
-            e2_start_and_e2_end_free,
-            e1_start_and_e2_end_free,
-            e2_start_and_e1_end_free,
-        ]
-        for l1, l2 in combinations(free_endpoints, 2):
-            assert not any(l1 & l2)
-        """
-
         # The free start and endpoints may have either the same value
         # or different values and we treat these cases separately.
 
-        # Same value
+        # SAME VALUE
+        # There are four ways a start and endpoint could have
+        # the same value.
         e1_start_and_e1_end_same = e1_start_and_e1_end_free & (
             annotations["rel-start1"] == annotations["rel-end1"]
         )
@@ -511,6 +503,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         e2_start_and_e1_end_same = e2_start_and_e1_end_free & (
             annotations["rel-start2"] == annotations["rel-end1"]
         )
+
+        # Combine these annotations into a single tensor.
         same_midpoint = torch.cat(
             [
                 annotations["rel-start1"][
@@ -521,6 +515,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 ],
             ]
         )
+
+        # Combine the associated confidence scores into a single tensor
         same_midpoint_conf = torch.cat(
             [
                 confidences["rel-start1"][
@@ -531,6 +527,20 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 ],
             ]
         )
+
+        # Combine the associated item (edge) IDs
+        same_midpoint_items = torch.cat(
+            [
+                items["rel-start1"][
+                    e1_start_and_e1_end_same | e1_start_and_e2_end_same
+                ],
+                items["rel-start2"][
+                    e2_start_and_e2_end_same | e2_start_and_e1_end_same
+                ],
+            ]
+        )
+
+        # For the above items, determine which of the start- and endpoints are locked
         same_midpoint_start_locked = torch.cat(
             [
                 start_locked[e1_start_and_e1_end_same | e1_start_and_e2_end_same],
@@ -551,19 +561,6 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         e2_start_and_e1_end_diff = e2_start_and_e1_end_free & ~e2_start_and_e1_end_same
         e2_start_and_e2_end_diff = e2_start_and_e2_end_free & ~e2_start_and_e2_end_same
 
-        # Assert the above four lists constitute disjoint sets of items
-        # Assertion was passing when last checked
-        """
-        different_endpoints = [
-            e1_start_and_e1_end_diff,
-            e1_start_and_e2_end_diff,
-            e2_start_and_e1_end_diff,
-            e2_start_and_e2_end_diff,
-        ]
-        for l1, l2 in combinations(different_endpoints, 2):
-            assert not any(l1 & l2)
-        """
-
         # 1. Midpoints = e1_start, e1_end
         diff_midpoints1 = torch.stack(
             [
@@ -575,6 +572,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints1_start_locked = start_locked[e1_start_and_e1_end_diff]
         diff_midpoints1_end_locked = end_locked[e1_start_and_e1_end_diff]
         diff_midpoints1_conf = confidences["rel-start1"][e1_start_and_e1_end_diff]
+        diff_midpoints1_items = items["rel-start1"][e1_start_and_e1_end_diff]
 
         # 2. Midpoints = e1_start, e2_end
         diff_midpoints2 = torch.stack(
@@ -587,6 +585,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints2_start_locked = start_locked[e1_start_and_e2_end_diff]
         diff_midpoints2_end_locked = end_locked[e1_start_and_e2_end_diff]
         diff_midpoints2_conf = confidences["rel-start1"][e1_start_and_e2_end_diff]
+        diff_midpoints2_items = items["rel-start1"][e1_start_and_e2_end_diff]
 
         # 3. Midpoints = e2_start, e1_end
         diff_midpoints3 = torch.stack(
@@ -599,6 +598,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints3_start_locked = start_locked[e2_start_and_e1_end_diff]
         diff_midpoints3_end_locked = end_locked[e2_start_and_e1_end_diff]
         diff_midpoints3_conf = confidences["rel-start2"][e2_start_and_e1_end_diff]
+        diff_midpoints3_items = items["rel-start2"][e2_start_and_e1_end_diff]
 
         # 4. Midpoints = e2_start, e2_end
         diff_midpoints4 = torch.stack(
@@ -611,8 +611,9 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         diff_midpoints4_start_locked = start_locked[e2_start_and_e2_end_diff]
         diff_midpoints4_end_locked = end_locked[e2_start_and_e2_end_diff]
         diff_midpoints4_conf = confidences["rel-start2"][e2_start_and_e2_end_diff]
+        diff_midpoints4_items = items["rel-start2"][e2_start_and_e2_end_diff]
 
-        # Combine
+        # Combine the four cases into a single tensor
         diff_midpoints = torch.cat(
             [diff_midpoints1, diff_midpoints2, diff_midpoints3, diff_midpoints4]
         )
@@ -640,6 +641,14 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 diff_midpoints4_conf,
             ]
         )
+        diff_midpoints_items = torch.cat(
+            [
+                diff_midpoints1_items,
+                diff_midpoints2_items,
+                diff_midpoints3_items,
+                diff_midpoints4_items,
+            ]
+        )
 
         # Likelihood calculation
         # TODO: incorporate random effects
@@ -648,58 +657,83 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         #         of the probabilities that the start point is locked and that the
         #         end point is locked (weighted by confidence)
         start_and_end_locked_conf = confidences["rel-start1"][start_and_end_locked]
-        start_and_end_locked_prob = Categorical(self.p_lock_start).log_prob(
-            torch.tensor([self.BOTH_LOCKED])
-        ) + Categorical(self.p_lock_end).log_prob(torch.tensor([self.BOTH_LOCKED]))
+        start_and_end_locked_items = items["rel-start1"][start_and_end_locked]
+        start_and_end_locked_prob = self._get_distribution2(
+            mus["time-lock_start_mu"]
+        ).log_prob(self.both_locked)
         start_and_end_locked_prob = (
-            start_and_end_locked_conf[:, None] * start_and_end_locked_prob
-        ).sum(0)
+            torch.ones(start_and_end_locked_conf.shape).to(self.device)[:, None]
+            * start_and_end_locked_prob
+        )
 
         # Case 2: One start- and one end point are free and these have the same value.
         #         We assume that value is normally distributed. We also incorporate the
         #         probability that the start- and end points are free to begin with.
-        same_midpoint_start_prob = Categorical(self.p_lock_start).log_prob(
-            same_midpoint_start_locked[:, None]
+        same_midpoint_start_prob = (
+            self._get_distribution2(mus["time-lock_start_mu"])
+            .log_prob(same_midpoint_start_locked[:, None])
+            .to(self.device)
         )
-        same_midpoint_end_prob = Categorical(self.p_lock_end).log_prob(
-            same_midpoint_end_locked[:, None]
+        same_midpoint_end_prob = (
+            self._get_distribution2(mus["time-lock_end_mu"])
+            .log_prob(same_midpoint_end_locked[:, None])
+            .to(self.device)
         )
-        same_midpoint_mid_prob = Bernoulli(self.p_lock_mid).log_prob(self.SAME_MIDPOINT)
+        same_midpoint_mid_prob = (
+            self._get_distribution2(mus["time-lock_mid_mu"])
+            .log_prob(self.SAME_MIDPOINT)
+            .to(self.device)
+        )
         same_midpoint_prob = (
-            Normal(mus["time-univariate_mu"], covs["time-univariate_sigma"]).log_prob(
-                same_midpoint[..., None]
-            )
+            Normal(mus["time-univariate_mu"], covs["time-univariate_sigma"])
+            .log_prob(same_midpoint[..., None])
+            .to(self.device)
             + same_midpoint_start_prob
             + same_midpoint_end_prob
             + same_midpoint_mid_prob
         )
-        same_midpoint_prob = (same_midpoint_conf[:, None] * same_midpoint_prob).sum(0)
+        # same_midpoint_prob = (same_midpoint_conf[:, None] * same_midpoint_prob)
+        same_midpoint_prob = (
+            torch.ones(same_midpoint_conf.shape).to(self.device)[:, None]
+            * same_midpoint_prob
+        )
 
-        # Case 3: One start- and one end point are frree and have *different* values.
+        # Case 3: One start- and one end point are free and have *different* values.
         #         We assume these two values are distributed multivariate normal. We
         #         also incorporate the probabilities that the start and end points are
         #         free to begin with.
-        diff_midpoints_start_prob = Categorical(self.p_lock_start).log_prob(
-            diff_midpoints_start_locked[:, None]
+        diff_midpoints_start_prob = (
+            self._get_distribution2(mus["time-lock_start_mu"])
+            .log_prob(diff_midpoints_start_locked[:, None])
+            .to(self.device)
         )
-        diff_midpoints_end_prob = Categorical(self.p_lock_end).log_prob(
-            diff_midpoints_end_locked[:, None]
+        diff_midpoints_end_prob = (
+            self._get_distribution2(mus["time-lock_end_mu"])
+            .log_prob(diff_midpoints_end_locked[:, None])
+            .to(self.device)
         )
-        diff_midpoints_mid_prob = Bernoulli(self.p_lock_mid).log_prob(
-            self.DIFFERENT_MIDPOINTS
+        diff_midpoints_mid_prob = (
+            self._get_distribution2(mus["time-lock_mid_mu"])
+            .log_prob(self.DIFFERENT_MIDPOINTS)
+            .to(self.device)
         )
         diff_midpoints_prob = (
             MultivariateNormal(mus["time-bivariate_mu"], covs["time-bivariate_sigma"])
             .log_prob(diff_midpoints[:, None, None, :])
             .squeeze()
+            .to(self.device)
             + diff_midpoints_start_prob
             + diff_midpoints_end_prob
             + diff_midpoints_mid_prob
         )
-        diff_midpoints_prob = (diff_midpoints_conf[:, None] * diff_midpoints_prob).sum(
-            0
+        # diff_midpoints_prob = (diff_midpoints_conf[:, None] * diff_midpoints_prob)
+        diff_midpoints_prob = (
+            torch.ones(diff_midpoints_conf.shape).to(self.device)[:, None]
+            * diff_midpoints_prob
         )
 
-        # Sum all three
-        total_ll += same_midpoint_prob + diff_midpoints_prob + start_and_end_locked_prob
+        # TODO: add time to per-property likelihoods ("likelihoods")
+        total_ll.index_add_(1, start_and_end_locked_items, start_and_end_locked_prob.T)
+        total_ll.index_add_(1, same_midpoint_items, same_midpoint_prob.T)
+        total_ll.index_add_(1, diff_midpoints_items, diff_midpoints_prob.T)
         return likelihoods, total_ll

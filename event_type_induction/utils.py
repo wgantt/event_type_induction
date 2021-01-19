@@ -31,12 +31,16 @@ class AllenRelation(Enum):
     E1_EQUALS_E2 = 13
 
 
-def exp_normalize(t: torch.Tensor) -> torch.Tensor:
+def exp_normalize(t: torch.Tensor, dim=None) -> torch.Tensor:
     """Normalizes a tensor of log values using the exp-normalize trick:
        https://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
     """
-    t2 = torch.exp(t - t.max())
-    return torch.log(t2 / t2.sum())
+    if dim is not None:
+        t2 = torch.exp(t - t.max(dim).values)
+        return torch.log(t2 / t2.sum(dim))
+    else:
+        t2 = torch.exp(t - t.max())
+        return torch.log(t2 / t2.sum())
 
 
 def load_pred_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
@@ -121,11 +125,11 @@ def get_documents_by_split(uds: UDSCorpus) -> Dict[str, Set[str]]:
 def get_item_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
     """Returns an iterator over sentence graph nodes or edges"""
     if t == Type.EVENT:
-        return graph.predicate_nodes.items()
+        return sorted(graph.predicate_nodes.items())
     elif t == Type.PARTICIPANT:
-        return graph.argument_nodes.items()
+        return sorted(graph.argument_nodes.items())
     elif t == Type.ROLE:
-        return graph.semantics_edges().items()
+        return sorted(graph.semantics_edges().items())
     else:
         raise ValueError(f"Unknown type {t}!")
 
@@ -459,10 +463,10 @@ def dump_property_means(mus: torch.nn.ParameterDict, outfile: str) -> None:
     df = pd.DataFrame()
     for prop, mean in mus.items():
         if mean.shape[-1] == 1:  # binary property
-            df[prop] = torch.exp(mean[:, 0]).detach().numpy()
+            df[prop] = torch.exp(mean[:, 0]).detach().cpu().numpy()
         else:
             for i in range(mean.shape[-1]):
-                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:, i]).detach().numpy()
+                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:, i]).detach().cpu().numpy()
     # write to file
     with open(outfile, "w") as f:
         df.to_csv(outfile, index=False)
