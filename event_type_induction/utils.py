@@ -217,7 +217,7 @@ def load_event_structure_annotations(uds: UDSCorpus) -> None:
         os.path.join(data_dir, "distributivity.json")
     )
     natural_parts = RawUDSAnnotation.from_json(
-        os.path.join(data_dir, "natural_parts_and_telicity.json")
+        os.path.join(data_dir, "natural_parts_and_telicity_corrected.json")
     )
 
     # arguments are (sentence_annotations, document_annotations)
