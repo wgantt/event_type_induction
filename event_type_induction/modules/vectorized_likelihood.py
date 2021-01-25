@@ -1,8 +1,7 @@
 import torch
 from collections import defaultdict
 from event_type_induction.constants import *
-from event_type_induction.utils import exp_normalize
-from itertools import combinations
+from event_type_induction.utils import exp_normalize, get_prop_dim
 from overrides import overrides
 from torch import Tensor, FloatTensor, randn, log
 from torch.distributions import (
@@ -14,7 +13,7 @@ from torch.distributions import (
     Dirichlet,
 )
 from torch.nn import Module, Parameter, ParameterDict, ParameterList
-from typing import Any, Dict, Set, Tuple, Union
+from typing import Dict, Set, Tuple, Union
 
 
 class Likelihood(Module):
@@ -24,6 +23,7 @@ class Likelihood(Module):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
         n_components: int,
+        use_ordinal: bool = False,
         device: str = "cpu",
     ):
         """Base class for vectorized Event Type Induction Module likelihood computations
@@ -47,8 +47,18 @@ class Likelihood(Module):
         self.annotator_confidences = annotator_confidences
         self.metadata = metadata
         self.n_components = n_components
+        self.use_ordinal = use_ordinal
         self.device = torch.device(device)
         self.to(device)
+
+        # When using ordinal models, it's useful to have a quick
+        # way of determining which properties are ordinal
+        if self.use_ordinal:
+            self.ordinal_properties = set()
+            for subspace in self.metadata.subspaces:
+                for prop, prop_meta in self.metadata[subspace].items():
+                    if prop_meta.value.is_ordered_categorical:
+                        self.ordinal_properties.add(prop)
 
     def _initialize_random_effects(self) -> ParameterDict:
         """Initialize annotator random effects for each property"""
@@ -61,51 +71,115 @@ class Likelihood(Module):
             num_annotators = max(len(subspace_annotators), max_annotator_idx + 1)
             for p in sorted(self.metadata.properties(subspace)):
 
-                # Determine property dimension
-                prop_dim = self._get_prop_dim(subspace, p)
-
-                # Single random intercept term per annotator per property
-                random_shift = Parameter(torch.randn(num_annotators, prop_dim))
                 prop_name = p.replace(".", "-")
-                random_effects[prop_name] = random_shift
+                if self.use_ordinal and p in self.ordinal_properties:
+                    # When using an ordinal model for ordinal properties, the random
+                    # effects correspond to per-annotator cutpoints
+                    n_categories = len(self.metadata[subspace][p].value.categories)
+                    prop_dim = n_categories - 1
+                    # TODO: determine how to set covariance for sampling
+                    # TODO: should random loss be different for these?
+                    ordinal_random_effect = Parameter(
+                        MultivariateNormal(
+                            torch.zeros(prop_dim), torch.eye(prop_dim) * 0.1
+                        ).sample((num_annotators,))
+                    )
+                    random_effects[prop_name] = ordinal_random_effect
+
+                    # If this is a conditional property (i.e. it may be annotated
+                    # as "does not apply"), we include a Bernoulli to model this.
+                    if p in CONDITIONAL_PROPERTIES:
+                        random_effects[prop_name + "-applies"] = Parameter(
+                            torch.randn(num_annotators) * 0.1
+                        )
+                else:
+                    prop_dim = get_prop_dim(
+                        self.metadata, subspace, p, use_ordinal=self.use_ordinal
+                    )
+                    random = Parameter(torch.randn(num_annotators, prop_dim))
+                    random_effects[prop_name] = random
 
         self.random_effects = ParameterDict(random_effects).to(self.device)
 
-    def _get_distribution(self, mu, random):
-        """Generates an appropriate distribution given a mean and random effect"""
-        if mu.shape[-1] == 1:
-            return Bernoulli(torch.sigmoid(torch.exp(mu) + random).squeeze())
-        else:
-            return Categorical(torch.softmax(torch.exp(mu) + random, -1).squeeze())
-
-    def _get_distribution2(self, mu):
-        """Generates an appropriate distribution given a mean and random effect"""
-        if mu.shape[-1] == 1:
-            return Bernoulli(torch.sigmoid(torch.exp(mu)).squeeze())
-        else:
-            return Categorical(torch.softmax(torch.exp(mu), -1).squeeze())
-
-    def _get_prop_dim(self, subspace, prop):
-        """Determines the appropriate dimension for a UDS property"""
-        # TODO: replace with version in utils
-        prop_data = self.metadata.metadata[subspace][prop].value
-        if prop_data.is_categorical:
-            n_categories = len(prop_data.categories)
-            # conditional categorical properties require an
-            # additional dimension for the "does not apply" case
-            if prop in CONDITIONAL_PROPERTIES:
-                return n_categories + 1
-            # non-conditional, ordinal categorical properties
-            if prop_data.is_ordered_categorical:
-                return n_categories
-            # non-conditional, binary categorical properties
-            else:
-                return n_categories - 1
-        # currently no non-categorical properties in UDS
-        else:
-            raise ValueError(
-                f"Non-categorical property {property} found in subspace {subspace}"
+    def _get_distribution(
+        self, mu: torch.Tensor, random: torch.Tensor = None, prop_name: str = None,
+    ):
+        """Generates an appropriate distribution given means and random effects"""
+        if self.use_ordinal and prop_name in self.ordinal_properties:
+            cuts_annotator = torch.cumsum(torch.exp(random), axis=2)
+            cuts_annotator -= torch.mean(cuts_annotator)
+            cdf = torch.sigmoid(cuts_annotator - mu)
+            cdf_high = torch.cat(
+                [cdf, torch.ones(cdf.shape[0], cdf.shape[1], 1).to(self.device)], axis=2
             )
+            cdf_low = torch.cat(
+                [torch.zeros(cdf.shape[0], cdf.shape[1], 1).to(self.device), cdf],
+                axis=2,
+            )
+            pmf = cdf_high - cdf_low
+            return Categorical(pmf.squeeze())
+
+        if random is not None:
+            mean = torch.exp(mu) + random
+        else:
+            mean = torch.exp(mu)
+
+        if mu.shape[-1] == 1:
+            return Bernoulli(torch.sigmoid(mean).squeeze())
+        else:
+            return Categorical(torch.softmax(mean, -1).squeeze())
+
+    def _get_random_effects(
+        self,
+        p: str,
+        mu: torch.Tensor,
+        annotators: Dict[str, torch.Tensor],
+        train_annotators: Dict[str, torch.Tensor] = None,
+        dev_annotators_in_train: Dict[str, torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        prop_name = p.replace(".", "-")
+        if dev_annotators_in_train:
+            # If evaluating on dev, we don't have tuned random effects for
+            # annotators who weren't seen during training, so we use the
+            # mean random effect across train set annotators.
+            train_random_effects = self.random_effects[prop_name][
+                train_annotators[p], :
+            ]
+            mean_train_random_effect = train_random_effects.mean(0)
+            random = self.random_effects[prop_name][annotators[p], :]
+            random[~dev_annotators_in_train[p]] = mean_train_random_effect
+            random = random.unsqueeze(0)
+
+            # For conditional properties, there are additional random effects
+            # for the Bernoulli that indicates whether the property applies or not
+            if (
+                self.use_ordinal
+                and p in self.ordinal_properties
+                and p in CONDITIONAL_PROPERTIES
+            ):
+                train_random_bernoulli = self.random_effects[prop_name + "-applies"][
+                    train_annotators[p]
+                ]
+                mean_train_random_bernoulli = train_random_bernoulli.mean(0)
+                random_bernoulli = self.random_effects[prop_name + "-applies"][
+                    annotators[p]
+                ]
+                random_bernoulli[
+                    ~dev_annotators_in_train[p]
+                ] = mean_train_random_bernoulli
+                random = (random_bernoulli, random)
+        else:
+            random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            if (
+                self.use_ordinal
+                and p in self.ordinal_properties
+                and p in CONDITIONAL_PROPERTIES
+            ):
+                random_bernoulli = self.random_effects[prop_name + "-applies"][
+                    annotators[p]
+                ]
+                random = (random_bernoulli, random)
+        return random
 
     def random_loss(self):
         """Computes log likelihood of annotator random effects
@@ -117,6 +191,8 @@ class Likelihood(Module):
         # Loss computed by property
         for prop, random in self.random_effects.items():
 
+            if len(random.shape) == 1:
+                random = random[:, None]
             normed = random - random.mean(0)
             # Estimate covariance
             cov = torch.matmul(torch.transpose(normed, 0, 1), normed) / (
@@ -160,29 +236,35 @@ class Likelihood(Module):
             confidence = confidences[p]
 
             # Grab the random intercept for the current annotator
-            if dev_annotators_in_train:
-                # If evaluating on dev, we don't have tuned random effects for
-                # annotators who weren't seen during training, so we use the
-                # mean random effect across train set annotators.
-                train_random_effects = self.random_effects[prop_name][
-                    train_annotators[p], :
-                ]
-                mean_train_random_effect = train_random_effects.mean(0)
-                random = self.random_effects[prop_name][annotators[p], :]
-                random[~dev_annotators_in_train[p]] = mean_train_random_effect
-            else:
-                random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            random = self._get_random_effects(
+                p, mu, annotators, train_annotators, dev_annotators_in_train
+            )
 
-            # Compute log likelihood (with clipping to prevent underflow)
-            dist = self._get_distribution(mu, random)
-            ll = dist.log_prob(anno)
-            min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
-            ll = torch.where(ll > min_ll, ll, min_ll,)
+            # Handle hurdle model for ordinal properties
+            if isinstance(random, tuple):
+                torch.equal(torch.isnan(anno), (confidence == 0))
+                property_applies_mu = mus[prop_name + "-applies"].unsqueeze(1)
+                property_applies_shift, ordinal_shift = random
+                property_applies_dist = Bernoulli(
+                    probs=torch.exp(property_applies_mu) + property_applies_shift
+                )
+                ordinal_dist = self._get_distribution(mu, ordinal_shift, prop_name=p)
+                bernoulli_ll = property_applies_dist.log_prob(confidence)
+                anno[torch.isnan(anno)] = 0
+                ordinal_ll = ordinal_dist.log_prob(anno)
+                ordinal_ll[:, confidence == 0] = 0
+                ll = ordinal_ll + bernoulli_ll
+            else:
+                ll = self._get_distribution(mu, random, prop_name=p).log_prob(anno)
+
+            # min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
+            # ll = torch.where(ll > min_ll, ll, min_ll,)
 
             # Weight likelihoods by confidence, then accumulate
             # by item (node/edge)
-            likelihoods[p] = ll * confidence
-            total_ll.index_add_(1, items[p], ll * confidence)
+            # TODO: add confidence back in
+            likelihoods[p] = ll
+            total_ll.index_add_(1, items[p], ll)
 
         return likelihoods, total_ll
 
@@ -194,6 +276,7 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
         n_components: int,
+        use_ordinal: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -201,6 +284,7 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
             annotator_confidences,
             metadata,
             n_components,
+            use_ordinal,
             device=device,
         )
         self._initialize_random_effects()
@@ -240,6 +324,7 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
         n_components: int,
+        use_ordinal: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -247,6 +332,7 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
             annotator_confidences,
             metadata,
             n_components,
+            use_ordinal,
             device=device,
         )
         self._initialize_random_effects()
@@ -282,6 +368,7 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
         n_components: int,
+        use_ordinal: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -289,6 +376,7 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
             annotator_confidences,
             metadata,
             n_components,
+            use_ordinal,
             device=device,
         )
         self._initialize_random_effects()
@@ -336,6 +424,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         annotator_confidences: Dict[str, Dict[int, float]],
         metadata: "UDSAnnotationMetadata",
         n_components: int,
+        use_ordinal: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -343,6 +432,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             annotator_confidences,
             metadata,
             n_components,
+            use_ordinal,
             device=device,
         )
         self._initialize_random_effects()
@@ -361,12 +451,12 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             for p in sorted(self.metadata.properties(subspace)):
 
                 # Determine property dimension
-                prop_dim = self._get_prop_dim(subspace, p)
+                prop_dim = get_prop_dim(self.metadata, subspace, p)
 
                 # Single random intercept term per annotator per property
-                random_shift = Parameter(torch.randn(num_annotators, prop_dim))
+                random = Parameter(torch.randn(num_annotators, prop_dim))
                 prop_name = p.replace(".", "-")
-                random_effects[prop_name] = random_shift
+                random_effects[prop_name] = random
 
         # In-progress changes to random effects; commenting out for now
         """
@@ -400,6 +490,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         num_items = max([i[-1].item() for i in items.values()]) + 1
         total_ll = torch.zeros(self.n_components, num_items).to(self.device)
 
+        '''
         # First, we handle all annotations other than temporal relations.
         # Currently, this is just mereological containment
         for p, anno in annotations.items():
@@ -440,6 +531,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
             likelihoods[p] = ll * confidence
             total_ll.index_add_(1, items[p], ll * confidence)
+        '''
 
         # Confidence values are the same for all four start-
         # and endpoints for a given annotation, so I arbitrarily
@@ -658,7 +750,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         #         end point is locked (weighted by confidence)
         start_and_end_locked_conf = confidences["rel-start1"][start_and_end_locked]
         start_and_end_locked_items = items["rel-start1"][start_and_end_locked]
-        start_and_end_locked_prob = self._get_distribution2(
+        start_and_end_locked_prob = self._get_distribution(
             mus["time-lock_start_mu"]
         ).log_prob(self.both_locked)
         start_and_end_locked_prob = (
@@ -670,17 +762,17 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         #         We assume that value is normally distributed. We also incorporate the
         #         probability that the start- and end points are free to begin with.
         same_midpoint_start_prob = (
-            self._get_distribution2(mus["time-lock_start_mu"])
+            self._get_distribution(mus["time-lock_start_mu"])
             .log_prob(same_midpoint_start_locked[:, None])
             .to(self.device)
         )
         same_midpoint_end_prob = (
-            self._get_distribution2(mus["time-lock_end_mu"])
+            self._get_distribution(mus["time-lock_end_mu"])
             .log_prob(same_midpoint_end_locked[:, None])
             .to(self.device)
         )
         same_midpoint_mid_prob = (
-            self._get_distribution2(mus["time-lock_mid_mu"])
+            self._get_distribution(mus["time-lock_mid_mu"])
             .log_prob(self.SAME_MIDPOINT)
             .to(self.device)
         )
@@ -703,17 +795,17 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         #         also incorporate the probabilities that the start and end points are
         #         free to begin with.
         diff_midpoints_start_prob = (
-            self._get_distribution2(mus["time-lock_start_mu"])
+            self._get_distribution(mus["time-lock_start_mu"])
             .log_prob(diff_midpoints_start_locked[:, None])
             .to(self.device)
         )
         diff_midpoints_end_prob = (
-            self._get_distribution2(mus["time-lock_end_mu"])
+            self._get_distribution(mus["time-lock_end_mu"])
             .log_prob(diff_midpoints_end_locked[:, None])
             .to(self.device)
         )
         diff_midpoints_mid_prob = (
-            self._get_distribution2(mus["time-lock_mid_mu"])
+            self._get_distribution(mus["time-lock_mid_mu"])
             .log_prob(self.DIFFERENT_MIDPOINTS)
             .to(self.device)
         )

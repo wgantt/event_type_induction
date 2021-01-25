@@ -20,7 +20,13 @@ LOG = setup_logging()
 
 
 class GMM:
-    def __init__(self, uds: UDSCorpus, random_seed: int = 42, device: str = "cpu"):
+    def __init__(
+        self,
+        uds: UDSCorpus,
+        random_seed: int = 42,
+        use_ordinal: bool = False,
+        device: str = "cpu",
+    ):
         """Gaussian mixture model over UDS properties
 
         Parameters
@@ -29,6 +35,9 @@ class GMM:
             the UDSCorpus
         random_seed
             optional random seed to use for the mixture model
+        use_ordinal
+            determines whether ordinal properties should actually be
+            represented as scalar interval values or as categorical ones
         device
             the device on which data tensors are to be created
         """
@@ -36,6 +45,7 @@ class GMM:
         self.s_metadata = self.uds.metadata.sentence_metadata
         self.d_metadata = self.uds.metadata.document_metadata
         self.random_seed = random_seed
+        self.use_ordinal = use_ordinal
         self.device = device
         self.str_to_category = {
             cat: idx
@@ -104,9 +114,6 @@ class GMM:
         # The length of a full annotation vector
         anno_vec_len = 0
 
-        # Total number of annotations
-        total_annos = 0
-
         # Counts total nodes or edges
         item_ctr = 0
 
@@ -126,7 +133,9 @@ class GMM:
 
                 for subspace in sorted(SUBSPACES_BY_TYPE[t]):
                     for p in sorted(self.s_metadata.properties(subspace)):
-                        prop_dim = get_prop_dim(self.s_metadata, subspace, p)
+                        prop_dim = get_prop_dim(
+                            self.s_metadata, subspace, p, use_ordinal=self.use_ordinal
+                        )
                         vec = np.zeros(prop_dim)
 
                         # The genericity subspace includes properties associated
@@ -146,11 +155,13 @@ class GMM:
                             anno_vec_len += prop_dim
 
                         # Process annotations for this item only if they actually exist
+                        n_annos = 0  # number of annotations for this item
                         if subspace in anno and p in anno[subspace]:
                             annotation_found = True
                             for a, value in anno[subspace][p]["value"].items():
 
-                                # Get confidence for this annotation
+                                # Confidence for current annotation
+                                # ---------------------------------
                                 conf = anno[subspace][p]["confidence"][a]
                                 ridit_conf = confidences[a]
                                 if (
@@ -162,39 +173,62 @@ class GMM:
                                 else:
                                     ridit_conf = ridit_conf.get(conf, 1)
 
-                                # Get the value for this annotation
+                                # Value for current annotation
+                                # ----------------------------
 
-                                # No value specified; assume this means "does not apply"
-                                # and select last category
+                                # Special case 1: None values (i.e. property was annotated as "doesn't aapply")
                                 if value is None:
+                                    # This should only be true of conditional properties
                                     assert (
                                         p in CONDITIONAL_PROPERTIES
                                     ), f"unexpected None value for property {p}"
-                                    val = prop_dim - 1
-                                # Only duration annotations are string-valued
+                                    # If this is an ordinal property, and we're treating ordinal variables
+                                    # as such, we set the "does not apply" value to the mean ordinal value
+                                    if (
+                                        self.use_ordinal
+                                        and self.s_metadata[subspace][
+                                            p
+                                        ].value.is_ordered_categorical
+                                    ):
+                                        val = np.nan
+                                    # Otherwise, the "does not apply" case corresponds to the last category
+                                    # when treating ordinal variables nominally.
+                                    else:
+                                        val = prop_dim - 1
+
+                                # Special case 2: String values (should only be duration annotations)
                                 elif isinstance(value, str):
                                     assert (
                                         p == "duration"
                                     ), f"unexpected string value for property {p}"
                                     val = self.str_to_category[value]
-                                # Protoroles uses confidence to indicate whether the
-                                # property applies or not
+
+                                # Special case 3: Protoroles properties
                                 elif subspace == "protoroles":
                                     if conf == 0:
-                                        val = prop_dim - 1
+                                        if self.use_ordinal:
+                                            val = np.nan
+                                            ridit_conf = conf
+                                        else:
+                                            val = prop_dim - 1
+                                            ridit_conf = 1
                                     else:
                                         val = value
-                                    ridit_conf = (
-                                        1  # No confidence values for protoroles
-                                    )
+                                        ridit_conf = 1
+
+                                # Default case: all other properties
                                 else:
                                     val = value
 
-                                if prop_dim == 1:  # binary
-                                    assert (
-                                        val == 0 or val == 1
-                                    ), f"non-binary value for binary property {p}"
-                                    vec[0] += val
+                                if prop_dim == 1:  # binary or ordinal
+                                    if not self.s_metadata[subspace][
+                                        p
+                                    ].value.is_ordered_categorical:
+                                        assert (
+                                            val == 0 or val == 1
+                                        ), f"non-binary value for binary property {p}"
+                                    if not np.isnan(val):
+                                        vec[0] += val
                                 else:  # categorical
                                     vec[val] += 1
 
@@ -205,25 +239,29 @@ class GMM:
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
                                 confidences_by_property[p].append(ridit_conf)
-                                total_annos += 1
+                                if not np.isnan(val):
+                                    n_annos += 1
                         else:
                             # No annotation for this property, so just use the mean
                             vec = property_means[p]
 
                         # Compute average annotation for this item; for all
                         # train data, there will be only one annotation
-                        anno_vec.append(vec / max(vec.sum(), 1))
+                        """
+                        assert (
+                            n_annos <= 3
+                        ), f"{n_annos} annotations found for property {p} on item {item}"
+                        """
+                        anno_vec.append(vec / max(n_annos, 1))
 
                 # Append current annotation vector to list of all
                 # annotation vectors (but only if we actually found
                 # relevant annotations)
                 if annotation_found:
                     all_annotations.append(np.concatenate(anno_vec))
-
                 item_ctr += 1
 
         return (
-            total_annos,
             np.stack(all_annotations),
             properties_to_indices,
             {
@@ -293,7 +331,6 @@ class GMM:
         confidences_by_property = defaultdict(list)
         properties_to_indices = {}
         anno_vec_len = 0
-        total_annos = 0
         item_ctr = 0
 
         for dname in data:
@@ -327,7 +364,6 @@ class GMM:
 
                                 # Bookkeeping
                                 n_annos += 1
-                                total_annos += 1
                                 annotations_by_property[p].append(value)
                                 items_by_property[p].append(item_ctr)
                                 annotator_num = int(a.split("-")[-1])
@@ -348,7 +384,6 @@ class GMM:
                 item_ctr += 1
 
         return (
-            total_annos,
             np.stack(all_annotations),
             properties_to_indices,
             {
@@ -381,10 +416,11 @@ class GMM:
         if t == Type.RELATION:
             property_means = None
         else:
-            property_means = get_sentence_property_means(self.uds, data, t)
+            property_means = get_sentence_property_means(
+                self.uds, data, t, use_ordinal=self.use_ordinal
+            )
 
         (
-            total_annos,
             average_annotations,
             properties_to_indices,
             annotations_by_property,
@@ -406,7 +442,6 @@ class GMM:
         # getter function again
         return (
             gmm,
-            total_annos,
             average_annotations,
             properties_to_indices,
             annotations_by_property,
@@ -418,7 +453,13 @@ class GMM:
 
 
 class MultiviewMixtureModel(Module):
-    def __init__(self, uds: UDSCorpus, random_seed: int = 42, device: str = "cpu"):
+    def __init__(
+        self,
+        uds: UDSCorpus,
+        random_seed: int = 42,
+        use_ordinal: bool = False,
+        device: str = "cpu",
+    ):
         super(MultiviewMixtureModel, self).__init__()
         self.uds = uds
         self.random_seed = random_seed
@@ -439,6 +480,7 @@ class MultiviewMixtureModel(Module):
         self.mus = None
         self.component_weights = None
         self.random_effects = None
+        self.use_ordinal = use_ordinal
         self.device = device
 
     def _init_mus(
@@ -449,24 +491,34 @@ class MultiviewMixtureModel(Module):
         n_components: int,
     ) -> None:
         mu_dict = {}
-        rel_start = np.inf
-        rel_end = -np.inf
+        if t == Type.RELATION:
+            metadata = self.d_metadata
+        else:
+            metadata = self.s_metadata
         for subspace in SUBSPACES_BY_TYPE[t]:
-            if t == Type.RELATION:
-                metadata = self.d_metadata
-            else:
-                metadata = self.s_metadata
             for p in metadata.properties(subspace):
+                # Random effects for relation types handled below
                 if "rel-" in p:
                     continue
+                # Restrict genericity to either argument or predicate
+                # depending on the type we're clustering on
                 if (t == Type.EVENT and "arg" in p) or (
                     t == Type.PARTICIPANT and "pred" in p
                 ):
                     continue
 
+                # Most means are set based on the GMM means
                 start, end = props_to_indices[p]
                 mu = torch.log(torch.FloatTensor(gmm_means[:, start:end]))
                 mu_dict[p.replace(".", "-")] = Parameter(mu)
+
+                # For conditional (hurdle model) properties, the Bernoulli
+                # that indicates whether the property applies or not is simply
+                # initialized to 0.5, out of laziness
+                if self.use_ordinal and p in CONDITIONAL_PROPERTIES:
+                    mu_applies = Parameter(torch.log(torch.ones(n_components) * 0.5))
+                    mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
+
         if t == Type.RELATION:
             # TODO: comment
             mu_dict["time-univariate_mu"] = Parameter(
@@ -528,10 +580,9 @@ class MultiviewMixtureModel(Module):
         )
         LOG.info("Fitting GMM...")
         train_confidences = self._get_annotator_ridits(data["train"], t)
-        train_gmm = GMM(self.uds, device=self.device)
+        train_gmm = GMM(self.uds, use_ordinal=self.use_ordinal, device=self.device)
         (
             gmm,
-            train_total_annos,
             train_avg_annotations,
             train_properties_to_indices,
             train_annotations_by_property,
@@ -555,10 +606,11 @@ class MultiviewMixtureModel(Module):
         if t == Type.RELATION:
             dev_property_means = None
         else:
-            dev_property_means = get_sentence_property_means(self.uds, data["dev"], t)
+            dev_property_means = get_sentence_property_means(
+                self.uds, data["dev"], t, self.use_ordinal
+            )
 
         (
-            dev_total_annos,
             dev_avg_annotations,
             dev_properties_to_indices,
             dev_annotations_by_property,
@@ -627,7 +679,11 @@ class MultiviewMixtureModel(Module):
         # Initialize Likelihood module, property means,
         # annotator random effects, and component weights
         ll = self.type_to_likelihood[t](
-            train_confidences, metadata, n_components, self.device
+            train_confidences,
+            metadata,
+            n_components,
+            use_ordinal=self.use_ordinal,
+            device=self.device,
         )
         self._init_mus(t, gmm.means_, train_properties_to_indices, n_components)
         self.random_effects = ll.random_effects
@@ -770,7 +826,9 @@ def main(args):
     model_root = args.model_name if args.model_name is not None else t.name
     for n_components in range(args.min_types, args.max_types + 1):
         # Initialize and fit the model
-        mmm = MultiviewMixtureModel(uds, device=args.device)
+        mmm = MultiviewMixtureModel(
+            uds, use_ordinal=args.use_ordinal, device=args.device
+        )
         model_name = model_root + "-" + str(n_components) + ".pt"
         mmm = mmm.fit(data, t, n_components)
 
@@ -801,6 +859,11 @@ if __name__ == "__main__":
         type=str,
         default="/data/wgantt/event_type_induction/checkpoints/",
         help="path to directory where checkpoint files are to be saved",
+    )
+    parser.add_argument(
+        "--use_ordinal",
+        action="store_true",
+        help="indicates whether ordinal variables should be treated as ordinal or as categorical",
     )
     parser.add_argument(
         "--dump_means",

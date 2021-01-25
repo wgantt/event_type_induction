@@ -135,41 +135,48 @@ def get_item_iter(graph: UDSSentenceGraph, t: Type) -> Iterator:
 
 
 def get_sentence_property_means(
-    uds: UDSCorpus, data: List[str], t: Type
+    uds: UDSCorpus, data: List[str], t: Type, use_ordinal: bool = False
 ) -> Dict[str, np.ndarray]:
     """Get the mean annotation for all properties for a given type"""
     annotations_by_property = defaultdict(list)
+    meta = uds.metadata.sentence_metadata
 
     if t == Type.EVENT:
         duration_to_category = {
             cat: idx
-            for idx, cat in enumerate(
-                uds.metadata.sentence_metadata["time"]["duration"].value.categories
-            )
+            for idx, cat in enumerate(meta["time"]["duration"].value.categories)
         }
 
     for sname in data:
         graph = uds[sname]
         for item, anno in get_item_iter(graph, t):
             for subspace in SUBSPACES_BY_TYPE[t]:
-                meta = uds.metadata.sentence_metadata
                 for p in meta.properties(subspace):
                     if (t == Type.EVENT and "arg" in p) or (
                         t == Type.PARTICIPANT and "pred" in p
                     ):
                         continue
-                    prop_dim = get_prop_dim(meta, subspace, p)
+                    prop_dim = get_prop_dim(meta, subspace, p, use_ordinal)
                     if subspace in anno and p in anno[subspace]:
                         for a, value in anno[subspace][p]["value"].items():
                             vec = np.zeros(prop_dim)
                             conf = anno[subspace][p]["confidence"][a]
-                            # No value specified; assume this means "does not apply"
-                            # and select last category
+                            # None value --> "does not apply"
                             if value is None:
                                 assert (
                                     p in CONDITIONAL_PROPERTIES
                                 ), f"unexpected None value for property {p}"
-                                val = prop_dim - 1
+                                if (
+                                    use_ordinal
+                                    and meta[subspace][p].value.is_ordered_categorical
+                                ):
+                                    # Maybe ignore these?
+                                    n_categories = len(
+                                        meta[subspace][p].value.categories
+                                    )
+                                    val = n_categories // 2
+                                else:
+                                    val = prop_dim - 1
                                 # Only duration annotations are string-valued
                             elif isinstance(value, str):
                                 assert (
@@ -180,16 +187,27 @@ def get_sentence_property_means(
                             # property applies or not
                             elif subspace == "protoroles":
                                 if conf == 0:
-                                    val = prop_dim - 1
+                                    # n_categories // 2 == 2 for protoroles; Aaron suggested 3...
+                                    # alternative is to exclude these cases from consideration
+                                    # when computing means
+                                    n_categories = len(
+                                        meta[subspace][p].value.categories
+                                    )
+                                    val = (
+                                        n_categories // 2
+                                        if use_ordinal
+                                        else prop_dim - 1
+                                    )
                                 else:
                                     val = value
                             else:
                                 val = value
 
-                            if prop_dim == 1:  # binary
-                                assert (
-                                    val == 0 or val == 1
-                                ), f"non-binary value for binary property {p}"
+                            if prop_dim == 1:  # binary or ordinal
+                                if not meta[subspace][p].value.is_ordered_categorical:
+                                    assert (
+                                        val == 0 or val == 1
+                                    ), f"non-binary value for binary property {p}"
                                 vec[0] = val
                             else:  # categorical
                                 vec[val] = 1
@@ -373,17 +391,26 @@ def ridit_score_confidence(
     }
 
 
-def get_prop_dim(metadata, subspace, prop):
+def get_prop_dim(
+    metadata: "UDSAnnotationMetadata",
+    subspace: str,
+    prop: str,
+    use_ordinal: bool = False,
+):
     """Determines the appropriate dimension for a UDS property"""
     prop_data = metadata.metadata[subspace][prop].value
     if prop_data.is_categorical:
         n_categories = len(prop_data.categories)
+        # if ordinal values are *treated* ordinally (instead of
+        # as categorical variables), the dimension is always 1
+        if prop_data.is_ordered_categorical and use_ordinal:
+            return 1
         # conditional categorical properties require an
         # additional dimension for the "does not apply" case
-        if prop in CONDITIONAL_PROPERTIES:
+        elif prop in CONDITIONAL_PROPERTIES:
             return n_categories + 1
         # non-conditional, ordinal categorical properties
-        if prop_data.is_ordered_categorical:
+        elif prop_data.is_ordered_categorical:
             return n_categories
         # non-conditional, binary categorical properties
         else:
