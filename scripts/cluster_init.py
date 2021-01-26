@@ -515,17 +515,33 @@ class MultiviewMixtureModel(Module):
                 # For conditional (hurdle model) properties, the Bernoulli
                 # that indicates whether the property applies or not is simply
                 # initialized to 0.5, out of laziness
-                if self.use_ordinal and p in CONDITIONAL_PROPERTIES:
+                is_ordinal = metadata[subspace][p].value.is_ordered_categorical
+                if self.use_ordinal and is_ordinal and p in CONDITIONAL_PROPERTIES:
                     mu_applies = Parameter(torch.log(torch.ones(n_components) * 0.5))
                     mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
 
         if t == Type.RELATION:
             # TODO: comment
             mu_dict["time-univariate_mu"] = Parameter(
-                torch.cat([torch.FloatTensor([50]) for _ in range(n_components)])
+                torch.abs(
+                    torch.cat(
+                        [Normal(46, 10).sample((1,)) for _ in range(n_components)]
+                    )
+                )
             )
+            bivariate_sample_mean = torch.FloatTensor([50, 50])
+            bivariate_sample_cov = torch.eye(2) * 400
             mu_dict["time-bivariate_mu"] = Parameter(
-                torch.stack([torch.FloatTensor([50, 50]) for _ in range(n_components)])
+                torch.abs(
+                    torch.stack(
+                        [
+                            MultivariateNormal(
+                                bivariate_sample_mean, bivariate_sample_cov
+                            ).sample()
+                            for _ in range(n_components)
+                        ]
+                    )
+                )
             )
             mu_dict["time-lock_start_mu"] = Parameter(
                 torch.log(
@@ -542,12 +558,10 @@ class MultiviewMixtureModel(Module):
             )
         self.mus = ParameterDict(mu_dict).to(self.device)
 
-    def _init_covs(self, n_components: int, sigma: int = 10) -> None:
+    def _init_covs(self, n_components: int) -> None:
         cov_dict = {}
-        univariate_sigma = torch.ones(n_components) * sigma
-        bivariate_sigma = torch.stack(
-            [sigma * torch.eye(2) for _ in range(n_components)]
-        )
+        univariate_sigma = torch.ones(n_components) * 20
+        bivariate_sigma = torch.stack([400 * torch.eye(2) for _ in range(n_components)])
         cov_dict["time-univariate_sigma"] = Parameter(univariate_sigma)
         cov_dict["time-bivariate_sigma"] = Parameter(bivariate_sigma)
         self.covs = ParameterDict(cov_dict).to(self.device)
@@ -567,9 +581,10 @@ class MultiviewMixtureModel(Module):
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
-        iterations: int = 15000,
+        iterations: int = 5000,
         lr: float = 0.001,
         concentration: float = 2.5,
+        patience: int = 1,
         verbosity: int = 10,
     ) -> "MultiviewMixtureModel":
         random.seed(self.random_seed)
@@ -692,6 +707,8 @@ class MultiviewMixtureModel(Module):
         )
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        min_dev_fixed_loss = float("inf")
+        iters_without_improvement = 0
         LOG.info(f"Beginning training for {iterations} epochs")
         for i in range(iterations):
 
@@ -742,7 +759,9 @@ class MultiviewMixtureModel(Module):
                 LOG.info(f"Lock end: {self.mus['time-lock_end_mu']}")
                 LOG.info(f"Lock mid: {self.mus['time-lock_mid_mu']}")
                 LOG.info(f"univariate mu: {self.mus['time-univariate_mu']}")
+                LOG.info(f"univariate cov: {self.covs['time-univariate_sigma']}")
                 LOG.info(f"bivariate mu: {self.mus['time-bivariate_mu']}")
+                LOG.info(f"bivariate cov: {self.covs['time-bivariate_sigma']}")
                 """
 
             # eval
@@ -771,10 +790,15 @@ class MultiviewMixtureModel(Module):
                     )
 
                 # stop early if no improvement in dev
-                # if i and dev_fixed_loss > prev_dev_fixed_loss:
-                if i and dev_fixed_loss > prev_dev_fixed_loss:
+                if dev_fixed_loss < min_dev_fixed_loss:
+                    min_dev_fixed_loss = dev_fixed_loss
+                    iters_without_improement = 0
+                else:
+                    iters_without_improvement += 1
+
+                if iters_without_improvement == patience:
                     LOG.info(
-                        f"No improvement in dev LL for model with {n_components} components. Stopping early."
+                        f"No improvement in dev LL for model with {n_components} components after {patience} iterations. Stopping early."
                     )
                     LOG.info(
                         f"Final component weights (epoch {i}): {torch.exp(exp_normalize(self.component_weights))}"
@@ -787,6 +811,7 @@ class MultiviewMixtureModel(Module):
                     )
                     return self.eval()
                 prev_dev_fixed_loss = dev_fixed_loss
+                prev_train_fixed_loss = train_fixed_loss
 
         LOG.info(f"Max iterations reached")
         LOG.info(
@@ -830,7 +855,7 @@ def main(args):
             uds, use_ordinal=args.use_ordinal, device=args.device
         )
         model_name = model_root + "-" + str(n_components) + ".pt"
-        mmm = mmm.fit(data, t, n_components)
+        mmm = mmm.fit(data, t, n_components, patience=args.patience)
 
         # Save it
         save_model(mmm.state_dict(), args.model_dir, model_name)
@@ -869,6 +894,12 @@ if __name__ == "__main__":
         "--dump_means",
         action="store_true",
         help="dump resulting property means to file",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=1,
+        help="number of epochs tolerated without dev improvement",
     )
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()

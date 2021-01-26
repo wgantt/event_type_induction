@@ -250,6 +250,8 @@ class Likelihood(Module):
                 )
                 ordinal_dist = self._get_distribution(mu, ordinal_shift, prop_name=p)
                 bernoulli_ll = property_applies_dist.log_prob(confidence)
+
+                # TODO: fix
                 anno[torch.isnan(anno)] = 0
                 ordinal_ll = ordinal_dist.log_prob(anno)
                 ordinal_ll[:, confidence == 0] = 0
@@ -490,7 +492,6 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         num_items = max([i[-1].item() for i in items.values()]) + 1
         total_ll = torch.zeros(self.n_components, num_items).to(self.device)
 
-        '''
         # First, we handle all annotations other than temporal relations.
         # Currently, this is just mereological containment
         for p, anno in annotations.items():
@@ -529,9 +530,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
             ll = torch.where(ll > min_ll, ll, min_ll,)
 
-            likelihoods[p] = ll * confidence
-            total_ll.index_add_(1, items[p], ll * confidence)
-        '''
+            likelihoods[p] = ll
+            total_ll.index_add_(1, items[p], ll)
 
         # Confidence values are the same for all four start-
         # and endpoints for a given annotation, so I arbitrarily
@@ -743,7 +743,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         )
 
         # Likelihood calculation
-        # TODO: incorporate random effects
+        # TODO: incorporate random effects and confidence
 
         # Case 1: both start and endpoints are locked. Likelihood is just the product
         #         of the probabilities that the start point is locked and that the
@@ -752,7 +752,11 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         start_and_end_locked_items = items["rel-start1"][start_and_end_locked]
         start_and_end_locked_prob = self._get_distribution(
             mus["time-lock_start_mu"]
-        ).log_prob(self.both_locked)
+        ).log_prob(self.both_locked) + self._get_distribution(
+            mus["time-lock_end_mu"]
+        ).log_prob(
+            self.both_locked
+        )
         start_and_end_locked_prob = (
             torch.ones(start_and_end_locked_conf.shape).to(self.device)[:, None]
             * start_and_end_locked_prob
