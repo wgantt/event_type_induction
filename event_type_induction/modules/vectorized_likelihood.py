@@ -24,6 +24,8 @@ class Likelihood(Module):
         metadata: "UDSAnnotationMetadata",
         n_components: int,
         use_ordinal: bool = False,
+        clip_min_ll: bool = False,
+        confidence_weighting: bool = False,
         device: str = "cpu",
     ):
         """Base class for vectorized Event Type Induction Module likelihood computations
@@ -39,6 +41,10 @@ class Likelihood(Module):
             the annotation metadata for all subspaces in property_subspaces
         n_components
             the number of components (types) for this likelihood
+        clip_min_ll
+            whether to clip the likelihood to a minimum value
+        confidence_weighting
+            whether to weight the likelihood by annotator confidence
         device
             the device to use
         """
@@ -48,6 +54,8 @@ class Likelihood(Module):
         self.metadata = metadata
         self.n_components = n_components
         self.use_ordinal = use_ordinal
+        self.clip_min_ll = clip_min_ll
+        self.confidence_weighting = confidence_weighting
         self.device = torch.device(device)
         self.to(device)
 
@@ -65,6 +73,13 @@ class Likelihood(Module):
         random_effects = {}
         for subspace in sorted(self.property_subspaces):
             subspace_annotators = self.metadata.annotators(subspace)
+            if subspace == "genericity":
+                if isinstance(self, PredicateNodeAnnotationLikelihood):
+                    subspace_annotators = {
+                        s for s in subspace_annotators if "pred" in s
+                    }
+                else:
+                    subspace_annotators = {s for s in subspace_annotators if "arg" in s}
             max_annotator_idx = max(
                 [int(s.split("-")[-1]) for s in subspace_annotators]
             )
@@ -119,11 +134,7 @@ class Likelihood(Module):
             pmf = cdf_high - cdf_low
             return Categorical(pmf.squeeze())
 
-        if random is not None:
-            mean = torch.exp(mu) + random
-        else:
-            mean = torch.exp(mu)
-
+        mean = mu if random is None else mu + random
         if mu.shape[-1] == 1:
             return Bernoulli(torch.sigmoid(mean).squeeze())
         else:
@@ -145,10 +156,11 @@ class Likelihood(Module):
             train_random_effects = self.random_effects[prop_name][
                 train_annotators[p], :
             ]
+            train_random_effects -= train_random_effects.mean()
             mean_train_random_effect = train_random_effects.mean(0)
             random = self.random_effects[prop_name][annotators[p], :]
             random[~dev_annotators_in_train[p]] = mean_train_random_effect
-            random = random.unsqueeze(0)
+            random = (random - random.mean()).unsqueeze(0)
 
             # For conditional properties, there are additional random effects
             # for the Bernoulli that indicates whether the property applies or not
@@ -160,6 +172,7 @@ class Likelihood(Module):
                 train_random_bernoulli = self.random_effects[prop_name + "-applies"][
                     train_annotators[p]
                 ]
+                train_random_bernoulli -= train_random_bernoulli.mean()
                 mean_train_random_bernoulli = train_random_bernoulli.mean(0)
                 random_bernoulli = self.random_effects[prop_name + "-applies"][
                     annotators[p]
@@ -167,9 +180,11 @@ class Likelihood(Module):
                 random_bernoulli[
                     ~dev_annotators_in_train[p]
                 ] = mean_train_random_bernoulli
+                random_bernoulli -= random_bernoulli.mean()
                 random = (random_bernoulli, random)
         else:
             random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            random -= random.mean()
             if (
                 self.use_ordinal
                 and p in self.ordinal_properties
@@ -178,13 +193,14 @@ class Likelihood(Module):
                 random_bernoulli = self.random_effects[prop_name + "-applies"][
                     annotators[p]
                 ]
+                random_bernoulli -= random.mean()
                 random = (random_bernoulli, random)
         return random
 
     def random_loss(self):
         """Computes log likelihood of annotator random effects
 
-        Random effects terms are assumed to be distributed MV normal
+           Random effects terms are assumed to be distributed MV normal
         """
         loss = FloatTensor([0.0]).to(self.device)
 
@@ -242,29 +258,33 @@ class Likelihood(Module):
 
             # Handle hurdle model for ordinal properties
             if isinstance(random, tuple):
-                torch.equal(torch.isnan(anno), (confidence == 0))
                 property_applies_mu = mus[prop_name + "-applies"].unsqueeze(1)
                 property_applies_shift, ordinal_shift = random
                 property_applies_dist = Bernoulli(
-                    probs=torch.exp(property_applies_mu) + property_applies_shift
+                    torch.sigmoid(property_applies_mu + property_applies_shift)
                 )
                 ordinal_dist = self._get_distribution(mu, ordinal_shift, prop_name=p)
                 bernoulli_ll = property_applies_dist.log_prob(confidence)
 
-                # TODO: fix
-                anno[torch.isnan(anno)] = 0
-                ordinal_ll = ordinal_dist.log_prob(anno)
-                ordinal_ll[:, confidence == 0] = 0
+                nans = torch.isnan(anno)
+                anno_no_nans = torch.clone(anno)
+                anno_no_nans[nans] = 0
+                ordinal_ll = ordinal_dist.log_prob(anno_no_nans)
+                ordinal_ll[:, nans] = 0
                 ll = ordinal_ll + bernoulli_ll
             else:
                 ll = self._get_distribution(mu, random, prop_name=p).log_prob(anno)
 
-            # min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
-            # ll = torch.where(ll > min_ll, ll, min_ll,)
+            if self.clip_min_ll:
+                min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
+                    self.device
+                )
+                ll = torch.where(ll > min_ll, ll, min_ll,)
 
             # Weight likelihoods by confidence, then accumulate
             # by item (node/edge)
-            # TODO: add confidence back in
+            if self.confidence_weighting:
+                ll *= confidence
             likelihoods[p] = ll
             total_ll.index_add_(1, items[p], ll)
 
@@ -279,6 +299,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         metadata: "UDSAnnotationMetadata",
         n_components: int,
         use_ordinal: bool = False,
+        clip_min_ll: bool = False,
+        confidence_weighting: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -287,6 +309,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
             metadata,
             n_components,
             use_ordinal,
+            clip_min_ll,
+            confidence_weighting,
             device=device,
         )
         self._initialize_random_effects()
@@ -306,7 +330,8 @@ class PredicateNodeAnnotationLikelihood(Likelihood):
         train_annotators: Dict[str, torch.Tensor] = None,
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
         covs: ParameterDict = None,
-    ) -> Dict[str, Tensor]:
+    ):
+
         return super().forward(
             mus,
             annotations,
@@ -327,6 +352,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
         metadata: "UDSAnnotationMetadata",
         n_components: int,
         use_ordinal: bool = False,
+        clip_min_ll: bool = False,
+        confidence_weighting: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -335,6 +362,8 @@ class ArgumentNodeAnnotationLikelihood(Likelihood):
             metadata,
             n_components,
             use_ordinal,
+            clip_min_ll,
+            confidence_weighting,
             device=device,
         )
         self._initialize_random_effects()
@@ -371,6 +400,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
         metadata: "UDSAnnotationMetadata",
         n_components: int,
         use_ordinal: bool = False,
+        clip_min_ll: bool = False,
+        confidence_weighting: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -379,6 +410,8 @@ class SemanticsEdgeAnnotationLikelihood(Likelihood):
             metadata,
             n_components,
             use_ordinal,
+            clip_min_ll,
+            confidence_weighting,
             device=device,
         )
         self._initialize_random_effects()
@@ -427,6 +460,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         metadata: "UDSAnnotationMetadata",
         n_components: int,
         use_ordinal: bool = False,
+        clip_min_ll: bool = False,
+        confidence_weighting: bool = False,
         device: str = "cpu",
     ):
         super().__init__(
@@ -435,6 +470,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             metadata,
             n_components,
             use_ordinal,
+            clip_min_ll,
+            confidence_weighting,
             device=device,
         )
         self._initialize_random_effects()
@@ -781,7 +818,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             .to(self.device)
         )
         same_midpoint_prob = (
-            Normal(mus["time-univariate_mu"], covs["time-univariate_sigma"])
+            Normal(mus["time-univariate_mu"].squeeze(), covs["time-univariate_sigma"])
             .log_prob(same_midpoint[..., None])
             .to(self.device)
             + same_midpoint_start_prob

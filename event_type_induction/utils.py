@@ -483,17 +483,39 @@ def load_model_with_args(cls, ckpt_path):
     return model, hyper_params
 
 
-def dump_property_means(mus: torch.nn.ParameterDict, outfile: str) -> None:
+def dump_params(
+    outfile: str, mus: torch.nn.ParameterDict, covs: torch.nn.ParameterDict = None
+) -> None:
     # create dataframe with components as rows and properties
     # as columns. Each dimension of a categorical property gets
     # its own column.
     df = pd.DataFrame()
     for prop, mean in mus.items():
-        if mean.shape[-1] == 1:  # binary property
-            df[prop] = torch.exp(mean[:, 0]).detach().cpu().numpy()
-        else:
+        if mean.shape[-1] == 1:  # binary or ordinal property
+            df[prop] = mean[:, 0].detach().cpu().numpy()
+        elif len(mean.shape) == 1:  # binary or ordinal property
+            df[prop] = mean.detach().cpu().numpy()
+        else:  # nominal property
             for i in range(mean.shape[-1]):
-                df[prop + f"-dim-{i+1}"] = torch.exp(mean[:, i]).detach().cpu().numpy()
+                df[prop + f"-dim-{i+1}"] = mean[:, i].detach().cpu().numpy()
+
+    if covs is not None:
+        df["same-midpoint-variance"] = (
+            covs["time-univariate_sigma"].detach().cpu().numpy()
+        )
+        df["diff-midpoint-covariance-row0-col0"] = (
+            covs["time-bivariate_sigma"][:, 0, 0].detach().cpu().numpy()
+        )
+        df["diff-midpoint-covariance-row0-col1"] = (
+            covs["time-bivariate_sigma"][:, 0, 1].detach().cpu().numpy()
+        )
+        df["diff-midpoint-covariance-row1-col0"] = (
+            covs["time-bivariate_sigma"][:, 1, 0].detach().cpu().numpy()
+        )
+        df["diff-midpoint-covariance-row1-col1"] = (
+            covs["time-bivariate_sigma"][:, 1, 1].detach().cpu().numpy()
+        )
+
     # write to file
     with open(outfile, "w") as f:
         df.to_csv(outfile, index=False)

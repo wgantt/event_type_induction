@@ -526,7 +526,7 @@ class MultiviewMixtureModel(Module):
                 torch.abs(
                     torch.cat(
                         [Normal(46, 10).sample((1,)) for _ in range(n_components)]
-                    )
+                    )[:, None]
                 )
             )
             bivariate_sample_mean = torch.FloatTensor([50, 50])
@@ -583,7 +583,8 @@ class MultiviewMixtureModel(Module):
         n_components: int,
         iterations: int = 5000,
         lr: float = 0.001,
-        concentration: float = 2.5,
+        clip_min_ll=False,
+        confidence_weighting=False,
         patience: int = 1,
         verbosity: int = 10,
     ) -> "MultiviewMixtureModel":
@@ -698,6 +699,8 @@ class MultiviewMixtureModel(Module):
             metadata,
             n_components,
             use_ordinal=self.use_ordinal,
+            clip_min_ll=clip_min_ll,
+            confidence_weighting=confidence_weighting,
             device=self.device,
         )
         self._init_mus(t, gmm.means_, train_properties_to_indices, n_components)
@@ -792,7 +795,7 @@ class MultiviewMixtureModel(Module):
                 # stop early if no improvement in dev
                 if dev_fixed_loss < min_dev_fixed_loss:
                     min_dev_fixed_loss = dev_fixed_loss
-                    iters_without_improement = 0
+                    iters_without_improvement = 0
                 else:
                     iters_without_improvement += 1
 
@@ -855,7 +858,14 @@ def main(args):
             uds, use_ordinal=args.use_ordinal, device=args.device
         )
         model_name = model_root + "-" + str(n_components) + ".pt"
-        mmm = mmm.fit(data, t, n_components, patience=args.patience)
+        mmm = mmm.fit(
+            data,
+            t,
+            n_components,
+            clip_min_ll=args.clip_min_ll,
+            confidence_weighting=args.weight_by_confidence,
+            patience=args.patience,
+        )
 
         # Save it
         save_model(mmm.state_dict(), args.model_dir, model_name)
@@ -864,7 +874,7 @@ def main(args):
         if args.dump_means:
             means_file = model_root + "-" + str(n_components) + ".csv"
             means_file = os.path.join(args.model_dir, means_file)
-            dump_property_means(mmm.mus, means_file)
+            dump_params(means_file, mmm.mus, mmm.covs)
 
 
 if __name__ == "__main__":
@@ -894,6 +904,16 @@ if __name__ == "__main__":
         "--dump_means",
         action="store_true",
         help="dump resulting property means to file",
+    )
+    parser.add_argument(
+        "--clip_min_ll",
+        action="store_true",
+        help="clip all likelihoods to a minimum value (currently 10e-5)",
+    )
+    parser.add_argument(
+        "--weight_by_confidence",
+        action="store_true",
+        help="weight likelihoods by annotator confidence",
     )
     parser.add_argument(
         "--patience",
