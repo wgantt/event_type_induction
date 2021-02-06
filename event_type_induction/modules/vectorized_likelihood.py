@@ -12,7 +12,7 @@ from torch.distributions import (
     Uniform,
     Dirichlet,
 )
-from torch.nn import Module, Parameter, ParameterDict, ParameterList
+from torch.nn import Module, Parameter, ParameterDict
 from typing import Dict, Set, Tuple, Union
 
 
@@ -479,7 +479,6 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
 
     @overrides
     def _initialize_random_effects(self) -> None:
-        # TODO: use parent implementation for mereology properties
         random_effects = {}
         for subspace in sorted(self.property_subspaces - {"time"}):
             subspace_annotators = self.metadata.annotators(subspace)
@@ -497,7 +496,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 prop_name = p.replace(".", "-")
                 random_effects[prop_name] = random
 
-        # In-progress changes to random effects; commenting out for now
+        # omitting random effects for temporal relations for debugging purposes
         """
         time_annotators = self.metadata.annotators("time")
         max_annotator_idx = max(
@@ -544,6 +543,7 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             confidence = confidences[p]
 
             # Determine random intercepts
+            # SETTING TO ZERO FOR DEBUGGING PURPOSES
             """
             if dev_annotators_in_train:
                 # If evaluating on dev, we don't have tuned random effects for
@@ -564,9 +564,13 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # Compute log likelihood (clipping to prevent underflow)
             dist = self._get_distribution(mu, random)
             ll = dist.log_prob(anno)
-            min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(self.device)
-            ll = torch.where(ll > min_ll, ll, min_ll,)
+            if self.clip_min_ll:
+                min_ll = torch.log(torch.ones(ll.shape) * MIN_LIKELIHOOD).to(
+                    self.device
+                )
+                ll = torch.where(ll > min_ll, ll, min_ll,)
 
+            # NO CONFIDENCE WEIGHTING FOR DEBUGGING PURPOSES
             likelihoods[p] = ll
             total_ll.index_add_(1, items[p], ll)
 

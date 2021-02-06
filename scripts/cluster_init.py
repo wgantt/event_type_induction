@@ -6,7 +6,6 @@ import numpy as np
 import random
 from sklearn.mixture import GaussianMixture
 import torch
-from torch.distributions import Dirichlet
 from torch.nn import Parameter, ParameterDict, Module
 from typing import List, Iterator
 
@@ -176,7 +175,7 @@ class GMM:
                                 # Value for current annotation
                                 # ----------------------------
 
-                                # Special case 1: None values (i.e. property was annotated as "doesn't aapply")
+                                # Special case 1: None values (i.e. property was annotated as "doesn't apply")
                                 if value is None:
                                     # This should only be true of conditional properties
                                     assert (
@@ -509,7 +508,9 @@ class MultiviewMixtureModel(Module):
 
                 # Most means are set based on the GMM means
                 start, end = props_to_indices[p]
-                mu = torch.log(torch.FloatTensor(gmm_means[:, start:end]))
+                mu = torch.FloatTensor(gmm_means[:, start:end])
+                zero = torch.ones(mu.shape) * ZERO
+                mu = torch.log(torch.where(mu > ZERO, mu, zero))
                 mu_dict[p.replace(".", "-")] = Parameter(mu)
 
                 # For conditional (hurdle model) properties, the Bernoulli
@@ -521,7 +522,10 @@ class MultiviewMixtureModel(Module):
                     mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
 
         if t == Type.RELATION:
-            # TODO: comment
+            # Mean for (univariate) Gaussian distribution for tied midpoints for two events
+            # We initialize these means per-component by sampling from a normal N(46,10).
+            # I've chosen 46, as it's the median midpoint for such cases; the variance of 10
+            # was chosen somewhat arbitrarily. 
             mu_dict["time-univariate_mu"] = Parameter(
                 torch.abs(
                     torch.cat(
@@ -529,6 +533,10 @@ class MultiviewMixtureModel(Module):
                     )[:, None]
                 )
             )
+
+            # Mean for (bivariate) Gaussian distribution for non-tied midpoints for two events
+            # These are initialized by sampling from a MVNormal centered at (50,50) w/ spherical
+            # covariance (400 along the diagonals)
             bivariate_sample_mean = torch.FloatTensor([50, 50])
             bivariate_sample_cov = torch.eye(2) * 400
             mu_dict["time-bivariate_mu"] = Parameter(
@@ -543,18 +551,22 @@ class MultiviewMixtureModel(Module):
                     )
                 )
             )
+
+            # Randomly initialize probabilities that 
+            #   1. The events' start points are locked to 0.
+            #   2. The events' end points are locked to 100.
+            #   3. The events' midpoints are locked to each other.
+            # The three dimensions of the first two distributions correspond to
+            # the probabilities that a) only e1 is locked; b) only e2 is locked;
+            # c) both are locked.
             mu_dict["time-lock_start_mu"] = Parameter(
-                torch.log(
-                    Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((n_components,))
-                )
+                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
             )
             mu_dict["time-lock_end_mu"] = Parameter(
-                torch.log(
-                    Dirichlet(torch.tensor([1.0, 1.0, 1.0])).sample((n_components,))
-                )
+                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
             )
             mu_dict["time-lock_mid_mu"] = Parameter(
-                torch.log(Uniform(0, 1).sample((n_components, 1)))
+                torch.log(torch.sigmoid(torch.randn((n_components, 1))))
             )
         self.mus = ParameterDict(mu_dict).to(self.device)
 
@@ -581,7 +593,7 @@ class MultiviewMixtureModel(Module):
         data: Dict[str, List[str]],
         t: Type,
         n_components: int,
-        iterations: int = 5000,
+        iterations: int = 10000,
         lr: float = 0.001,
         clip_min_ll=False,
         confidence_weighting=False,
@@ -710,6 +722,7 @@ class MultiviewMixtureModel(Module):
         )
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        min_train_fixed_loss = float("inf")
         min_dev_fixed_loss = float("inf")
         iters_without_improvement = 0
         LOG.info(f"Beginning training for {iterations} epochs")
@@ -746,6 +759,7 @@ class MultiviewMixtureModel(Module):
 
             # train logging
             if i % verbosity == 0:
+                LOG.info(f"means: {torch.exp(self.mus['containment-p1_contains_p2'])}")
                 LOG.info(
                     f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
                 )
@@ -757,15 +771,6 @@ class MultiviewMixtureModel(Module):
                 LOG.info(
                     f"Epoch {i} train random loss: {np.round(train_random_loss.item(), 5)}"
                 )
-                """
-                LOG.info(f"Lock start: {self.mus['time-lock_start_mu']}")
-                LOG.info(f"Lock end: {self.mus['time-lock_end_mu']}")
-                LOG.info(f"Lock mid: {self.mus['time-lock_mid_mu']}")
-                LOG.info(f"univariate mu: {self.mus['time-univariate_mu']}")
-                LOG.info(f"univariate cov: {self.covs['time-univariate_sigma']}")
-                LOG.info(f"bivariate mu: {self.mus['time-bivariate_mu']}")
-                LOG.info(f"bivariate cov: {self.covs['time-bivariate_sigma']}")
-                """
 
             # eval
             with torch.no_grad():
@@ -799,6 +804,8 @@ class MultiviewMixtureModel(Module):
                 else:
                     iters_without_improvement += 1
 
+                # since we're doing full GD, there's no real sense in setting
+                # patience to anything other than 1
                 if iters_without_improvement == patience:
                     LOG.info(
                         f"No improvement in dev LL for model with {n_components} components after {patience} iterations. Stopping early."
