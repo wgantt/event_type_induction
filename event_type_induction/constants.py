@@ -1,11 +1,11 @@
 from enum import Enum
 
 # Numerical constants
-POS_INF = 1e10
-NEG_INF = -1e10
-ZERO = 1e-10
+POS_INF = 1e7
+NEG_INF = -1e7
+ZERO = 1e-7
 ONE = 1 - ZERO
-MIN_LIKELIHOOD = 1e-5
+MIN_LIKELIHOOD = 1e-7
 
 # UDS-related constants
 class Type(Enum):
@@ -16,7 +16,6 @@ class Type(Enum):
 
 
 STR_TO_TYPE = {t.name: t for t in Type}
-
 
 N_CONFIDENCE_SCORES = 5
 

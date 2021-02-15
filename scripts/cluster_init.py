@@ -1,6 +1,5 @@
 # Package external imports
 import argparse
-from collections import defaultdict
 from decomp import UDSCorpus
 import numpy as np
 import random
@@ -96,19 +95,22 @@ class GMM:
         properties_to_indices = {}
 
         # All (raw) annotations, grouped by property
-        annotations_by_property = defaultdict(list)
+        annotations_by_property = DefaultOrderedDict(list)
 
         # Annotators corresponding to each annotation in annotations_by_property
-        annotators_by_property = defaultdict(list)
+        annotators_by_property = DefaultOrderedDict(list)
 
         # Confidence scores for each annotation in annotations_by_property
-        confidences_by_property = defaultdict(list)
+        confidences_by_property = DefaultOrderedDict(list)
 
-        # Items corresponding to each annotation in annotations_by_property
-        items_by_property = defaultdict(list)
+        # Item IDs corresponding to each annotation in annotations_by_property
+        items_by_property = DefaultOrderedDict(list)
+
+        # Maps integer IDs to UDS node/edge names
+        idx_to_item = DefaultOrderedDict(str)
 
         # Unique annotators for each property
-        unique_annotators_by_property = defaultdict(set)
+        unique_annotators_by_property = DefaultOrderedDict(set)
 
         # The length of a full annotation vector
         anno_vec_len = 0
@@ -234,6 +236,7 @@ class GMM:
                                 # Raw annotations and confidences by property
                                 annotations_by_property[p].append(val)
                                 items_by_property[p].append(item_ctr)
+                                idx_to_item[item_ctr] = item
                                 annotator_num = int(a.split("-")[-1])
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
@@ -271,6 +274,7 @@ class GMM:
                 p: torch.LongTensor(np.array(v)).to(device)
                 for p, v in items_by_property.items()
             },
+            idx_to_item,
             {
                 p: torch.FloatTensor(np.array(v)).to(device)
                 for p, v in confidences_by_property.items()
@@ -323,11 +327,12 @@ class GMM:
         device: str = "cpu",
     ):
         all_annotations = []
-        annotations_by_property = defaultdict(list)
-        items_by_property = defaultdict(list)
-        annotators_by_property = defaultdict(list)
-        unique_annotators_by_property = defaultdict(set)
-        confidences_by_property = defaultdict(list)
+        annotations_by_property = DefaultOrderedDict(list)
+        items_by_property = DefaultOrderedDict(list)
+        idx_to_item = DefaultOrderedDict(str)
+        annotators_by_property = DefaultOrderedDict(list)
+        unique_annotators_by_property = DefaultOrderedDict(set)
+        confidences_by_property = DefaultOrderedDict(list)
         properties_to_indices = {}
         anno_vec_len = 0
         item_ctr = 0
@@ -365,6 +370,7 @@ class GMM:
                                 n_annos += 1
                                 annotations_by_property[p].append(value)
                                 items_by_property[p].append(item_ctr)
+                                idx_to_item[item_ctr] = edge
                                 annotator_num = int(a.split("-")[-1])
                                 annotators_by_property[p].append(annotator_num)
                                 unique_annotators_by_property[p].add(annotator_num)
@@ -393,6 +399,7 @@ class GMM:
                 p: torch.LongTensor(np.array(v)).to(device)
                 for p, v in items_by_property.items()
             },
+            idx_to_item,
             {
                 p: torch.FloatTensor(np.array(v)).to(device)
                 for p, v in confidences_by_property.items()
@@ -424,6 +431,7 @@ class GMM:
             properties_to_indices,
             annotations_by_property,
             items_by_property,
+            idx_to_item,
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
@@ -445,6 +453,7 @@ class GMM:
             properties_to_indices,
             annotations_by_property,
             items_by_property,
+            idx_to_item,
             confidences_by_property,
             annotators_by_property,
             unique_annotators_by_property,
@@ -479,6 +488,10 @@ class MultiviewMixtureModel(Module):
         self.mus = None
         self.component_weights = None
         self.random_effects = None
+        self.final_train_posteriors = None
+        self.final_dev_posteriors = None
+        self.train_idx_to_item = None
+        self.dev_idx_to_item = None
         self.use_ordinal = use_ordinal
         self.device = device
 
@@ -522,37 +535,7 @@ class MultiviewMixtureModel(Module):
                     mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
 
         if t == Type.RELATION:
-            # Mean for (univariate) Gaussian distribution for tied midpoints for two events
-            # We initialize these means per-component by sampling from a normal N(46,10).
-            # I've chosen 46, as it's the median midpoint for such cases; the variance of 10
-            # was chosen somewhat arbitrarily. 
-            mu_dict["time-univariate_mu"] = Parameter(
-                torch.abs(
-                    torch.cat(
-                        [Normal(46, 10).sample((1,)) for _ in range(n_components)]
-                    )[:, None]
-                )
-            )
-
-            # Mean for (bivariate) Gaussian distribution for non-tied midpoints for two events
-            # These are initialized by sampling from a MVNormal centered at (50,50) w/ spherical
-            # covariance (400 along the diagonals)
-            bivariate_sample_mean = torch.FloatTensor([50, 50])
-            bivariate_sample_cov = torch.eye(2) * 400
-            mu_dict["time-bivariate_mu"] = Parameter(
-                torch.abs(
-                    torch.stack(
-                        [
-                            MultivariateNormal(
-                                bivariate_sample_mean, bivariate_sample_cov
-                            ).sample()
-                            for _ in range(n_components)
-                        ]
-                    )
-                )
-            )
-
-            # Randomly initialize probabilities that 
+            # Randomly initialize probabilities that
             #   1. The events' start points are locked to 0.
             #   2. The events' end points are locked to 100.
             #   3. The events' midpoints are locked to each other.
@@ -569,14 +552,6 @@ class MultiviewMixtureModel(Module):
                 torch.log(torch.sigmoid(torch.randn((n_components, 1))))
             )
         self.mus = ParameterDict(mu_dict).to(self.device)
-
-    def _init_covs(self, n_components: int) -> None:
-        cov_dict = {}
-        univariate_sigma = torch.ones(n_components) * 20
-        bivariate_sigma = torch.stack([400 * torch.eye(2) for _ in range(n_components)])
-        cov_dict["time-univariate_sigma"] = Parameter(univariate_sigma)
-        cov_dict["time-bivariate_sigma"] = Parameter(bivariate_sigma)
-        self.covs = ParameterDict(cov_dict).to(self.device)
 
     def _get_annotator_ridits(
         self, data: List[str], t: Type
@@ -615,6 +590,7 @@ class MultiviewMixtureModel(Module):
             train_properties_to_indices,
             train_annotations_by_property,
             train_items_by_property,
+            self.train_idx_to_item,
             train_confidences_by_property,
             train_annotators_by_property,
             train_unique_annotators_by_property,
@@ -643,6 +619,7 @@ class MultiviewMixtureModel(Module):
             dev_properties_to_indices,
             dev_annotations_by_property,
             dev_items_by_property,
+            self.dev_idx_to_item,
             dev_confidences_by_property,
             dev_annotators_by_property,
             dev_unique_annotators_by_property,
@@ -697,12 +674,8 @@ class MultiviewMixtureModel(Module):
         # relation types; sentence metadata for everything else)
         if t == Type.RELATION:
             metadata = self.d_metadata
-
-            # Initialize covariance matrices
-            self._init_covs(n_components)
         else:
             metadata = self.s_metadata
-            self.covs = None
 
         # Initialize Likelihood module, property means,
         # annotator random effects, and component weights
@@ -735,7 +708,6 @@ class MultiviewMixtureModel(Module):
                 train_items_by_property,
                 train_annotators_by_property,
                 train_confidences_by_property,
-                covs=self.covs,
             )
 
             # per-type likelihoods for all items
@@ -743,12 +715,12 @@ class MultiviewMixtureModel(Module):
 
             # add in prior over components
             prior = exp_normalize(self.component_weights)[:, None]
-            train_fixed_loss[:, train_items] += prior
+            train_posteriors = train_fixed_loss[:, train_items] + prior
 
             # logsumexp over all components to get log-evidence for each item,
             # then mean-reduce
             train_fixed_loss = (
-                -torch.logsumexp(train_fixed_loss, 0).sum() / total_train_items
+                -torch.logsumexp(train_posteriors, 0).sum() / total_train_items
             )
 
             # add in random loss, backprop, and take gradient step
@@ -759,7 +731,6 @@ class MultiviewMixtureModel(Module):
 
             # train logging
             if i % verbosity == 0:
-                LOG.info(f"means: {torch.exp(self.mus['containment-p1_contains_p2'])}")
                 LOG.info(
                     f"component weights: {torch.exp(exp_normalize(self.component_weights))}"
                 )
@@ -782,14 +753,13 @@ class MultiviewMixtureModel(Module):
                     dev_confidences_by_property,
                     train_unique_annotators_by_property,
                     dev_annotators_in_train,
-                    covs=self.covs,
                 )
 
                 # dev fixed loss computed the same way as train
                 dev_fixed_loss = dev_ll
-                dev_fixed_loss[:, dev_items] += prior
+                dev_posteriors = dev_fixed_loss[:, dev_items] + prior
                 dev_fixed_loss = (
-                    -torch.logsumexp(dev_fixed_loss, 0).sum() / total_dev_items
+                    -torch.logsumexp(dev_posteriors, 0).sum() / total_dev_items
                 )
 
                 if i % verbosity == 0:
@@ -807,6 +777,8 @@ class MultiviewMixtureModel(Module):
                 # since we're doing full GD, there's no real sense in setting
                 # patience to anything other than 1
                 if iters_without_improvement == patience:
+                    self.final_train_posteriors = train_posteriors
+                    self.final_dev_posteriors = dev_posteriors
                     LOG.info(
                         f"No improvement in dev LL for model with {n_components} components after {patience} iterations. Stopping early."
                     )
@@ -820,8 +792,6 @@ class MultiviewMixtureModel(Module):
                         f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item(), 5)}"
                     )
                     return self.eval()
-                prev_dev_fixed_loss = dev_fixed_loss
-                prev_train_fixed_loss = train_fixed_loss
 
         LOG.info(f"Max iterations reached")
         LOG.info(
@@ -833,6 +803,8 @@ class MultiviewMixtureModel(Module):
         LOG.info(
             f"Final dev fixed loss (epoch {i}): {np.round(dev_fixed_loss.item(), 5)}"
         )
+        self.final_train_posteriors = train_posteriors
+        self.final_dev_posteriors = dev_posteriors
         return self.eval()
 
 
@@ -879,9 +851,22 @@ def main(args):
 
         # Dump property means to file
         if args.dump_means:
-            means_file = model_root + "-" + str(n_components) + ".csv"
+            means_file = "-".join([model_root, str(n_components), "means"]) + ".csv"
             means_file = os.path.join(args.model_dir, means_file)
-            dump_params(means_file, mmm.mus, mmm.covs)
+            dump_params(means_file, mmm.mus)
+
+        if args.dump_posteriors:
+            posteriors_file = (
+                "-".join([model_root, str(n_components), "posteriors"]) + ".csv"
+            )
+            posteriors_file = os.path.join(args.model_dir, posteriors_file)
+            dump_posteriors(
+                posteriors_file,
+                mmm.final_train_posteriors,
+                mmm.train_idx_to_item,
+                mmm.final_dev_posteriors,
+                mmm.dev_idx_to_item,
+            )
 
 
 if __name__ == "__main__":
@@ -908,9 +893,12 @@ if __name__ == "__main__":
         help="indicates whether ordinal variables should be treated as ordinal or as categorical",
     )
     parser.add_argument(
-        "--dump_means",
+        "--dump_means", action="store_true", help="dump MMM property means to file",
+    )
+    parser.add_argument(
+        "--dump_posteriors",
         action="store_true",
-        help="dump resulting property means to file",
+        help="dump per-item MMM (log) posteriors to file",
     )
     parser.add_argument(
         "--clip_min_ll",
