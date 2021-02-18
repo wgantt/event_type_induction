@@ -5,6 +5,7 @@ POS_INF = 1e7
 NEG_INF = -1e7
 ZERO = 1e-7
 ONE = 1 - ZERO
+MIN_MEAN = 1e-3
 MIN_LIKELIHOOD = 1e-7
 
 # UDS-related constants

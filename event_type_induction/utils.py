@@ -499,23 +499,6 @@ def dump_params(
             for i in range(mean.shape[-1]):
                 df[prop + f"-dim-{i+1}"] = mean[:, i].detach().cpu().numpy()
 
-    if covs is not None:
-        df["same-midpoint-variance"] = (
-            covs["time-univariate_sigma"].detach().cpu().numpy()
-        )
-        df["diff-midpoint-covariance-row0-col0"] = (
-            covs["time-bivariate_sigma"][:, 0, 0].detach().cpu().numpy()
-        )
-        df["diff-midpoint-covariance-row0-col1"] = (
-            covs["time-bivariate_sigma"][:, 0, 1].detach().cpu().numpy()
-        )
-        df["diff-midpoint-covariance-row1-col0"] = (
-            covs["time-bivariate_sigma"][:, 1, 0].detach().cpu().numpy()
-        )
-        df["diff-midpoint-covariance-row1-col1"] = (
-            covs["time-bivariate_sigma"][:, 1, 1].detach().cpu().numpy()
-        )
-
     # write to file
     with open(outfile, "w") as f:
         df.to_csv(outfile, index=False)
