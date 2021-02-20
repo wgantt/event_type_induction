@@ -523,7 +523,7 @@ class MultiviewMixtureModel(Module):
                 start, end = props_to_indices[p]
                 mu = torch.FloatTensor(gmm_means[:, start:end])
                 min_mean = torch.ones(mu.shape) * MIN_MEAN
-                mu = torch.log(torch.where(mu > MIN_MEAN, mu, min_mean))
+                mu = torch.where(mu > MIN_MEAN, mu, min_mean)
                 mu_dict[p.replace(".", "-")] = Parameter(mu)
 
                 # For conditional (hurdle model) properties, the Bernoulli
@@ -531,7 +531,7 @@ class MultiviewMixtureModel(Module):
                 # initialized to 0.5, out of laziness
                 is_ordinal = metadata[subspace][p].value.is_ordered_categorical
                 if self.use_ordinal and is_ordinal and p in CONDITIONAL_PROPERTIES:
-                    mu_applies = Parameter(torch.log(torch.ones(n_components) * 0.5))
+                    mu_applies = Parameter(torch.ones(n_components) * 0.5)
                     mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
 
         if t == Type.RELATION:
@@ -546,17 +546,17 @@ class MultiviewMixtureModel(Module):
             # to the probabilities that 1) both points are locked; 2) only
             # e1's point is locked; 3) only e2's point is locked
             mu_dict["time-lock_start_mu"] = Parameter(
-                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
+                torch.softmax(torch.randn((n_components, 3)), -1)
             )
             mu_dict["time-lock_end_mu"] = Parameter(
-                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
+                torch.softmax(torch.randn((n_components, 3)), -1)
             )
 
             # The three dimensions of these distributions correspond to
             # the probabailities that 1) e1's midpoint equals e2's midpoint;
             # 2) e1's midpoint comes before e2's; 3) e2's comes before e1's.
             mu_dict["time-lock_mid_mu"] = Parameter(
-                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
+                torch.softmax(torch.randn((n_components, 3)), -1)
             )
 
         self.mus = ParameterDict(mu_dict).to(self.device)
@@ -696,9 +696,7 @@ class MultiviewMixtureModel(Module):
             confidence_weighting=confidence_weighting,
             device=self.device,
         )
-        self._init_mus(
-            t, gmm.means_, train_properties_to_indices, n_components
-        )
+        self._init_mus(t, gmm.means_, train_properties_to_indices, n_components)
         self.random_effects = ll.random_effects
         self.component_weights = Parameter(
             torch.log(torch.FloatTensor(gmm.weights_)).to(self.device)
