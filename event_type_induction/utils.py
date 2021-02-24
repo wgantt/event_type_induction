@@ -43,6 +43,10 @@ def exp_normalize(t: torch.Tensor, dim=None) -> torch.Tensor:
         return torch.log(t2 / t2.sum())
 
 
+def logit(t: torch.FloatTensor) -> torch.FloatTensor:
+    return torch.log(t / (1 - t))
+
+
 def load_pred_node_annotator_ids(uds: UDSCorpus) -> Set[str]:
     # predicate nodoe subspaces: time, genericity, factuality, event_structure
     pred_node_annotators = set()
@@ -80,7 +84,38 @@ def load_doc_edge_annotator_ids(uds: UDSCorpus) -> Set[str]:
     return uds.metadata.document_metadata.annotators()
 
 
-def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
+def load_train_annotators(uds: UDSCorpus) -> Set[str]:
+    """Return all the annotators in the UDS train split"""
+    train_annotators = set()
+    excluded_subspaces = {"domain", "type", "frompredpatt", "id"}
+    for sent, graph in uds.items():
+        if "train" not in sent:
+            continue
+        for node_anno in graph.semantics_nodes.values():
+            subspaces = node_anno.keys() - excluded_subspaces
+            for subspace in subspaces:
+                for prop, prop_anno in node_anno[subspace].items():
+                    train_annotators = train_annotators.union(prop_anno["value"].keys())
+        for edge_anno in graph.semantics_edges().values():
+            subspaces = edge_anno.keys() - excluded_subspaces
+            for subspace in subspaces:
+                for prop, prop_anno in edge_anno[subspace].items():
+                    train_annotators = train_annotators.union(prop_anno["value"].keys())
+
+    for doc, graph in uds.documents.items():
+        is_train = "train" in list(graph.sentence_ids)[0]
+        if not is_train:
+            continue
+        for edge, edge_anno in graph.document_graph.edges().items():
+            subspaces = edge_anno.keys() - excluded_subspaces
+            for subspace in subspaces:
+                for prop, prop_anno in edge_anno[subspace].items():
+                    train_annotators = train_annotators.union(prop_anno["value"].keys())
+
+    return train_annotators
+
+
+def load_annotator_ids(uds: UDSCorpus, train_only: bool = False) -> Tuple[Set[str]]:
     """Fetch all of the annotator IDs from an annotated UDS corpus
 
     Parameters
@@ -88,12 +123,21 @@ def load_annotator_ids(uds: UDSCorpus) -> Tuple[Set[str]]:
     uds
         The UDSCorpus object from which annotator IDs are to
         be extracted
+    train_only
+        Indicates whether only train annotators should be included
     """
 
     pred_node_annotators = load_pred_node_annotator_ids(uds)
     arg_node_annotators = load_arg_node_annotator_ids(uds)
     sem_edge_annotators = load_sem_edge_annotator_ids(uds)
     doc_edge_annotators = load_doc_edge_annotator_ids(uds)
+
+    if train_only:
+        all_train_annotators = load_train_annotators(uds)
+        pred_node_annotators = pred_node_annotators.intersection(all_train_annotators)
+        arg_node_annotators = arg_node_annotators.intersection(all_train_annotators)
+        sem_edge_annotators = sem_edge_annotators.intersection(all_train_annotators)
+        doc_edge_annotators = doc_edge_annotators.intersection(all_train_annotators)
 
     return (
         pred_node_annotators,

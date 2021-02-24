@@ -519,20 +519,40 @@ class MultiviewMixtureModel(Module):
                 ):
                     continue
 
-                # Most means are set based on the GMM means
+                # Most means for the mixture model are set based on
+                # the GMM means
                 start, end = props_to_indices[p]
                 mu = torch.FloatTensor(gmm_means[:, start:end])
                 min_mean = torch.ones(mu.shape) * MIN_MEAN
                 mu = torch.where(mu > MIN_MEAN, mu, min_mean)
-                mu_dict[p.replace(".", "-")] = Parameter(mu)
 
-                # For conditional (hurdle model) properties, the Bernoulli
-                # that indicates whether the property applies or not is simply
-                # initialized to 0.5, out of laziness
+                # We apply different mean initialization strategies based on
+                # property type
                 is_ordinal = metadata[subspace][p].value.is_ordered_categorical
-                if self.use_ordinal and is_ordinal and p in CONDITIONAL_PROPERTIES:
-                    mu_applies = Parameter(torch.ones(n_components) * 0.5)
-                    mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
+                if self.use_ordinal and is_ordinal:
+                    # Ordinal conditional properties are modeled using a hurdle
+                    # model, so we initialize a mean for the Bernoullis that
+                    # indicate whether the property applies or not.
+                    if p in CONDITIONAL_PROPERTIES:
+                        mu_applies = Parameter(logit(torch.ones(n_components) * 0.5))
+                        mu_dict[p.replace(".", "-") + "-applies"] = mu_applies
+
+                    # For all ordinal properties, we subtract off the median
+                    # of the ordinal scale (this is 2 for protoroles)
+                    if subspace == "protoroles":
+                        median = 2
+                    else:
+                        median = len(metadata[subspace][p].value.categories) // 2
+                    mu -= median
+
+                # For binary properties, we apply a logit to the GMM mean
+                elif mu.shape[-1] == 1:
+                    mu = logit(mu)
+                # All other means are stored in log form
+                else:
+                    mu = torch.log(mu)
+
+                mu_dict[p.replace(".", "-")] = Parameter(mu)
 
         if t == Type.RELATION:
             # Randomly initialize probabilities that
@@ -546,17 +566,17 @@ class MultiviewMixtureModel(Module):
             # to the probabilities that 1) both points are locked; 2) only
             # e1's point is locked; 3) only e2's point is locked
             mu_dict["time-lock_start_mu"] = Parameter(
-                torch.softmax(torch.randn((n_components, 3)), -1)
+                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
             )
             mu_dict["time-lock_end_mu"] = Parameter(
-                torch.softmax(torch.randn((n_components, 3)), -1)
+                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
             )
 
             # The three dimensions of these distributions correspond to
             # the probabailities that 1) e1's midpoint equals e2's midpoint;
             # 2) e1's midpoint comes before e2's; 3) e2's comes before e1's.
             mu_dict["time-lock_mid_mu"] = Parameter(
-                torch.softmax(torch.randn((n_components, 3)), -1)
+                torch.log(torch.softmax(torch.randn((n_components, 3)), -1))
             )
 
         self.mus = ParameterDict(mu_dict).to(self.device)
@@ -863,6 +883,7 @@ def main(args):
             means_file = os.path.join(args.model_dir, means_file)
             dump_params(means_file, mmm.mus)
 
+        # Dump per-item posteriors to file
         if args.dump_posteriors:
             posteriors_file = (
                 "-".join([model_root, str(n_components), "posteriors"]) + ".csv"

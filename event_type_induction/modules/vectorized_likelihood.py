@@ -116,7 +116,7 @@ class Likelihood(Module):
                     prop_dim = get_prop_dim(
                         self.metadata, subspace, p, use_ordinal=self.use_ordinal
                     )
-                    random = Parameter(torch.randn(num_annotators, prop_dim))
+                    random = Parameter(torch.randn(num_annotators, prop_dim) * 0.1)
                     random_effects[prop_name] = random
 
         self.random_effects = ParameterDict(random_effects).to(self.device)
@@ -153,7 +153,7 @@ class Likelihood(Module):
         dev_annotators_in_train: Dict[str, torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         prop_name = p.replace(".", "-")
-        if "time" in p:
+        if "time-" in p:
             p = "rel-start1"
         if dev_annotators_in_train:
             # If evaluating on dev, we don't have tuned random effects for
@@ -166,7 +166,7 @@ class Likelihood(Module):
             mean_train_random_effect = train_random_effects.mean(0)
             random = self.random_effects[prop_name][annotators[p], :]
             random[~dev_annotators_in_train[p]] = mean_train_random_effect
-            random = (random - random.mean()).unsqueeze(0)
+            random = (random - random.mean(0))[None]
 
             # For conditional properties, there are additional random effects
             # for the Bernoulli that indicates whether the property applies or not
@@ -178,7 +178,7 @@ class Likelihood(Module):
                 train_random_bernoulli = self.random_effects[prop_name + "-applies"][
                     train_annotators[p]
                 ]
-                train_random_bernoulli -= train_random_bernoulli.mean()
+                train_random_bernoulli -= train_random_bernoulli.mean(0)
                 mean_train_random_bernoulli = train_random_bernoulli.mean(0)
                 random_bernoulli = self.random_effects[prop_name + "-applies"][
                     annotators[p]
@@ -186,11 +186,11 @@ class Likelihood(Module):
                 random_bernoulli[
                     ~dev_annotators_in_train[p]
                 ] = mean_train_random_bernoulli
-                random_bernoulli -= random_bernoulli.mean()
+                random_bernoulli -= random_bernoulli.mean(0)
                 random = (random_bernoulli, random)
         else:
-            random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
-            random -= random.mean()
+            random = self.random_effects[prop_name][annotators[p], :][None]
+            random -= random.mean(0)
             if (
                 self.use_ordinal
                 and p in self.ordinal_properties
@@ -258,7 +258,7 @@ class Likelihood(Module):
 
             # Grab the random intercept for the current annotator
             random = self._get_random_effects(
-                p, mu, annotators, train_annotators, dev_annotators_in_train
+                p, annotators, train_annotators, dev_annotators_in_train
             )
 
             # Handle hurdle model for ordinal properties
@@ -269,11 +269,19 @@ class Likelihood(Module):
                     torch.sigmoid(property_applies_mu + property_applies_shift)
                 )
                 ordinal_dist = self._get_distribution(mu, ordinal_shift, prop_name=p)
-                bernoulli_ll = property_applies_dist.log_prob(confidence)
 
+                # Confidence indicates whether the property applies or not
+                # for protoroles; otherrwise, this is indicated by a NaN value
                 nans = torch.isnan(anno)
-                anno_no_nans = torch.clone(anno)
-                anno_no_nans[nans] = 0
+                zero = torch.zeros(anno.shape).to(self.device)
+                if p in self.metadata.properties("protoroles"):
+                    property_applies = confidence
+                else:
+                    one = torch.ones(anno.shape).to(self.device)
+                    property_applies = torch.where(nans, zero, one).to(self.device)
+                bernoulli_ll = property_applies_dist.log_prob(property_applies)
+
+                anno_no_nans = torch.where(nans, zero, anno)
                 ordinal_ll = ordinal_dist.log_prob(anno_no_nans)
                 ordinal_ll[:, nans] = 0
                 ll = ordinal_ll + bernoulli_ll
@@ -286,11 +294,12 @@ class Likelihood(Module):
                 )
                 ll = torch.where(ll > min_ll, ll, min_ll,)
 
-            # Weight likelihoods by confidence, then accumulate
-            # by item (node/edge)
+            # Weight likelihoods by confidence, if applicable
             if self.confidence_weighting:
                 ll *= confidence
             likelihoods[p] = ll
+
+            # Accumulate per-property likelihood into per-item likelihood
             total_ll.index_add_(1, items[p], ll)
 
         return likelihoods, total_ll
@@ -540,19 +549,10 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
             # The mean for the current property
             mu = mus[prop_name].unsqueeze(1)
 
-            # Determine random intercepts
-            if dev_annotators_in_train:
-                # If evaluating on dev, we don't have tuned random effects for
-                # annotators who weren't seen during training, so we use the
-                # mean random effect across train set annotators.
-                train_random_effects = self.random_effects[prop_name][
-                    train_annotators[p], :
-                ]
-                mean_train_random_effect = train_random_effects.mean(0)
-                random = self.random_effects[prop_name][annotators[p], :]
-                random[~dev_annotators_in_train[p]] = mean_train_random_effect
-            else:
-                random = self.random_effects[prop_name][annotators[p], :].unsqueeze(0)
+            # Determine random intercepts and get the probability distribution
+            random = self._get_random_effects(
+                p, annotators, train_annotators, dev_annotators_in_train
+            )
             dist = self._get_distribution(mu, random, prop_name)
 
             # min-clip LL, if applicable
