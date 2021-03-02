@@ -3,6 +3,7 @@ import numpy as np
 import torch
 
 from abc import ABC, abstractmethod, abstractproperty
+from collections import defaultdict
 from decomp.semantics.uds import UDSSentenceGraph, UDSDocumentGraph
 from enum import Enum
 from event_type_induction.modules.likelihood import Likelihood
@@ -91,8 +92,7 @@ class Node(ABC):
         """Retrieve all but an excluded set of this node's neighbors
 
         exclusion
-            The neighbors to exclude (should only ever be a single
-            node --- the target)
+            The neighbor to exclude (e.g. the target)
         """
 
         if exclusion is None:
@@ -147,7 +147,7 @@ class VariableNode(Node):
     def type(self):
         return NodeType.VARIABLE
 
-    def belief(self, normalize=False) -> Tensor:
+    def belief(self, normalize: bool = False, exclusion: Optional["Node"] = None) -> Tensor:
         """Return the belief of the variable node
 
         As throughout this class, this method assumes that messages
@@ -155,7 +155,7 @@ class VariableNode(Node):
         """
 
         # Fetch the neighbors
-        neighbors = self.graph.neighbors(self)
+        neighbors = self.neighbors() if not exclusion else self.neighbors(exclusion)
 
         # Fetch the first neighbor
         n = next(neighbors)
@@ -234,7 +234,6 @@ class LikelihoodFactorNode(FactorNode):
         factor: Likelihood,
         mus: ParameterDict,
         annotation: Dict[str, Any],
-        cov: Parameter = None,
     ):
         """Unary leaf factors to compute annotation likelihoods
 
@@ -252,44 +251,27 @@ class LikelihoodFactorNode(FactorNode):
         self.mus = mus
         self.annotation = annotation
         self.per_type_likelihood = None
-        self.cov = cov
+        self.per_property_likelihoods = None
 
     @overrides
     def sum_product(self, target_node: VariableNode) -> Tensor:
-        # Compute per-property log likelihoods for each of the
-        # relevant event types
-        if self.cov is not None:
-            likelihoods = self.factor(self.mus, self.cov, self.annotation)
-        else:
-            likelihoods = self.factor(self.mus, self.annotation)
-
-        # If the annotation does not include properties of interest,
-        # the returned likelihoods will be empty. The likelihood in
-        # this case is 1, so we return a tensor of log(1) == 0 values.
-        if len(likelihoods) == 0:
-            self.per_type_likelihood = None
-            return torch.zeros(target_node.ntypes).to(self.device)
-
-        # Sum the per-property log likelihoods to obtain overall,
-        # per-type likelihoods (with dimension equal to the number
-        # of possible values of the target node)
-        per_type_likelihood = torch.sum(torch.stack(list(likelihoods.values())), dim=0)
-
-        # Likelihood nodes are leaf factors, so no integration
-        # over other variable nodes is necessary here. Return
-        # the per-type log likelihood as is.
-        self.per_type_likelihood = per_type_likelihood
-        return per_type_likelihood
+        # Sum-product for likelihood factors just involves invoking
+        # the forward function for the appropriate likelihood module
+        # Likelihoods are saved on the node in unnormalized form, but
+        # are passed as messages in their normalized form
+        self.per_property_likelihoods, self.per_type_likelihood = self.factor(
+            self.mus, self.annotation
+        )
+        return normalize_message(self.per_type_likelihood)
 
     @overrides
     def max_product(self, target_node: VariableNode) -> Tensor:
         # A likelihood factor node's behavior is the same in the
         # max-product case as in the max-sum case; the only difference
         # is that we track the argmax for each type
-        per_type_likelihood = self.sum_product(target_node)
+        self.per_type_likelihood = self.sum_product(target_node)
         self.record[target_node] = per_type_likelihood.argmax()
-        self.per_type_likelihood = per_type_likelihood
-        return per_type_likelihood
+        return self.per_type_likelihood
 
 
 class PriorFactorNode(FactorNode):
@@ -481,66 +463,6 @@ class Edge:
         return self.message[self.index[source_node]][self.index[target_node]]
 
 
-class DimensionMismatchEdge(Edge):
-    """Class for handling dimension mismatch between variables and factors"""
-
-    @overrides
-    def __init__(self, source_node, target_node, factor_dim=0) -> None:
-        self.index = {source_node: 0, target_node: 1}
-        self.factor_dim = factor_dim
-
-        # Determine which variable is source and which target
-        if source_node.type == NodeType.VARIABLE:
-            var_node, factor_node = source_node, target_node
-        else:
-            var_node, factor_node = target_node, source_node
-
-        # Initialize the messages. Owing to the dimension mismatch,
-        # the two messages must have different dimensions.
-        var_to_factor_msg_dim = factor_node.factor.shape[self.factor_dim]
-        var_to_factor_msg_init = torch.ones(var_to_factor_msg_dim) * NEG_INF
-        var_to_factor_msg_init[: var_node.ntypes] = 0
-        factor_to_var_msg_dim = var_node.ntypes
-        factor_to_var_msg_init = torch.zeros(factor_to_var_msg_dim)
-
-        self.message = [[None, None], [None, None]]
-        self.message[self.index[var_node]][
-            self.index[factor_node]
-        ] = var_to_factor_msg_init
-        self.message[self.index[factor_node]][
-            self.index[var_node]
-        ] = factor_to_var_msg_init
-
-    @overrides
-    def set_message(self, source_node, target_node, msg) -> None:
-        new_msg = self._correct_dimension_mismatch(source_node, target_node, msg)
-        super().set_message(source_node, target_node, new_msg)
-
-    def _correct_dimension_mismatch(
-        self, source_node, target_node, msg
-    ) -> torch.Tensor:
-        """Correct dimension mismatch between factors and variables
-
-        This should only ever occur for edges between an event type
-        variable node and a relation type prior node, where the number
-        of relation types is strictly greater than the number of
-        event types.
-        """
-
-        # variable --> factor: expand message dimension
-        if source_node.type == NodeType.VARIABLE:
-            var_node, factor_node = source_node, target_node
-            desired_msg_length = factor_node.factor.shape[self.factor_dim]
-            new_msg = torch.ones(desired_msg_length) * NEG_INF
-            new_msg[: len(msg)] = msg
-        # factor --> variable: contract message dimension
-        else:
-            var_node, factor_node = target_node, source_node
-            desired_msg_length = var_node.ntypes
-            new_msg = msg[:desired_msg_length]
-        return new_msg
-
-
 class FactorGraph(nx.Graph):
     """Class for factor graphs"""
 
@@ -592,7 +514,6 @@ class FactorGraph(nx.Graph):
             else:
                 raise ValueError(f"Invalid factor node type {node.type}!")
         else:
-            # TODO: replace with warning when logging is set up
             print(f"Invalid node type {node.type}!")
 
         self.add_node(node, type=node.type)
@@ -613,34 +534,13 @@ class FactorGraph(nx.Graph):
             the dimension of the factor node's tensor with which
             the variable node is associated
         """
-        # Verify that each edge connects a variable node to a factor node,
-        # then identify which is which
         if node1.type == node2.type:
             raise ValueError(
                 f"Attempted to create edge between {node1.label} "
                 f"and {node2.label}, but they have the same type ({node1.type}!"
             )
-
-        # Default edge
+        # Add the edge
         edge = Edge(node1, node2, factor_dim)
-
-        # Special case: dimension mismatch between variable and factor nodes.
-        # This should occur only between event type variable nodes and
-        # relation type factor nodes.
-        if isinstance(node1, PriorFactorNode):
-            if (
-                node1.vtype == VariableType.RELATION
-                and node2.vtype == VariableType.EVENT
-            ):
-                edge = DimensionMismatchEdge(node1, node2, factor_dim)
-        elif isinstance(node2, PriorFactorNode):
-            if (
-                node2.vtype == VariableType.RELATION
-                and node1.vtype == VariableType.EVENT
-            ):
-                edge = DimensionMismatchEdge(node1, node2, factor_dim)
-
-        # Add the edge to the NetworkX graph
         self.add_edge(node1, node2, object=edge)
 
     @property
@@ -685,6 +585,7 @@ class FactorGraph(nx.Graph):
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
         exclusions: Optional[Dict[Node, Optional[Node]]] = {},
+        normalize_beliefs: bool = True
     ) -> Dict[str, Any]:
         """Runs message passing on graphs with cycles
 
@@ -714,6 +615,8 @@ class FactorGraph(nx.Graph):
             order = list(self._factor_nodes.values()) + list(
                 self._variable_nodes.values()
             )
+            # Order nodes by degree
+            # order = [e[0] for e in sorted(self.degree, key=lambda n: n[1])]
 
         if not exclusions:
             exclusions = {node: None for node in order}
@@ -730,6 +633,6 @@ class FactorGraph(nx.Graph):
 
         # Return final beliefs for query nodes
         for n in query_nodes:
-            beliefs[n.label] = n.belief()
+            beliefs[n.label] = n.belief(normalize_beliefs)
 
         return beliefs

@@ -889,7 +889,7 @@ def main(args):
                 "-".join([model_root, str(n_components), "posteriors"]) + ".csv"
             )
             posteriors_file = os.path.join(args.model_dir, posteriors_file)
-            dump_posteriors(
+            dump_mmm_posteriors(
                 posteriors_file,
                 mmm.final_train_posteriors,
                 mmm.train_idx_to_item,

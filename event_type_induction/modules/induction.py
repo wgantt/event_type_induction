@@ -13,14 +13,10 @@ from event_type_induction.modules.likelihood import (
     DocumentEdgeAnnotationLikelihood,
 )
 from event_type_induction.modules.freezable_module import FreezableModule
-from event_type_induction.utils import (
-    exp_normalize,
-    load_annotator_ids,
-    ridit_score_confidence,
-    get_allen_relation,
-    AllenRelation,
-)
+from event_type_induction.utils import *
 from event_type_induction.constants import *
+from scripts.cluster_init import MultiviewMixtureModel
+from scripts.setup_logging import setup_logging
 
 # Package-external imports
 import time
@@ -29,10 +25,10 @@ import numpy as np
 from decomp import UDSCorpus
 from decomp.semantics.uds import UDSDocument, UDSDocumentGraph
 from collections import defaultdict
+import networkx as nx
 from torch.nn import Parameter, ParameterDict
 from torch.nn.functional import softmax
-from typing import Dict, Tuple, Union
-from scripts.setup_logging import setup_logging
+from typing import Dict, Tuple, Union, Optional
 
 
 LOG = setup_logging()
@@ -44,83 +40,160 @@ class EventTypeInductionModel(FreezableModule):
         n_event_types: int,
         n_role_types: int,
         n_relation_types: int,
-        n_entity_types: int,
+        n_participant_types: int,
         bp_iters: int,
         uds: "UDSCorpus" = None,
+        use_ordinal: bool = True,
+        clip_min_ll: bool = True,
+        confidence_weighting: bool = True,
+        use_random_effects: bool = True,
+        mmm_ckpts=None,
         device: str = "cpu",
         random_seed: int = 42,
     ):
         """Base module for event type induction"""
 
         super().__init__()
+        self.use_ordinal = use_ordinal
+        self.clip_min_ll = clip_min_ll
+        self.confidence_weighting = confidence_weighting
+        self.use_random_effects = use_random_effects
         self.random_seed = random_seed
         self.device = torch.device(device)
         torch.manual_seed(random_seed)
         np.random.seed(random_seed)
+        clz = self.__class__
 
         if uds is None:
             self.uds = UDSCorpus(version="2.0", annotation_format="raw")
+            load_event_structure_annotations(self.uds)
         else:
             self.uds = uds
 
         # Number of iterations for which to run BP
         self.bp_iters = bp_iters
 
-        # Initialize categorical distributions for the different types.
-        # We do not place priors on any of these distributions,
-        # initializing them randomly instead
-        self.n_event_types = n_event_types
-        self.n_role_types = n_role_types
-        self.n_entity_types = n_entity_types
+        # Initialize model params from MMM checkpoints
+        if mmm_ckpts is not None:
+            for t in Type:
+                assert t in mmm_ckpts, f"Missing checkpoint for type {t}"
 
-        # +1 for the "no-relation" relation
-        self.n_relation_types = n_relation_types + 1
+            # Load number of types, prior probabilties, means, and covariance
+            # (for relation types) from the MMM checkpoints
+            (
+                self.n_event_types,
+                event_probs,
+                self.event_mus,
+                event_random_effects,
+            ) = self._load_mmm_params(mmm_ckpts[Type.EVENT], Type.EVENT)
 
-        # Participants may be either events or entities
-        self.n_participant_types = n_event_types + n_entity_types
+            # events
+            self.event_probs = Parameter(event_probs)
+            (
+                self.n_participant_types,
+                participant_probs,
+                self.participant_mus,
+                participant_random_effects,
+            ) = self._load_mmm_params(mmm_ckpts[Type.PARTICIPANT], Type.PARTICIPANT)
 
-        # We initialize all probabilities using a softmax-transformed
-        # unit normal, and store them as log probabilities
-        clz = self.__class__
+            # participants
+            self.participant_probs = Parameter(participant_probs)
 
-        # Event types
-        self.event_probs = clz._initialize_log_prob((self.n_event_types,))
+            # roles
+            (
+                self.n_role_types,
+                role_probs,
+                self.role_mus,
+                role_random_effects,
+            ) = self._load_mmm_params(mmm_ckpts[Type.ROLE], Type.ROLE)
+            self.role_probs = Parameter(
+                role_probs.repeat((self.n_event_types, self.n_participant_types, 1))
+            )
 
-        # Participants are either events or entities, which is
-        # determined by a Bernoulli
-        self.participant_domain_prob = clz._initialize_log_prob((1,))
+            # relations
+            (
+                self.n_relation_types,
+                relation_probs,
+                self.relation_mus,
+                relation_random_effects,
+            ) = self._load_mmm_params(mmm_ckpts[Type.RELATION], Type.RELATION)
 
-        # Entity-type participant probabilities (event-type participants
-        # are selected from event_probs above)
-        self.entity_probs = clz._initialize_log_prob((self.n_entity_types,))
+            # see comments below for more detail on these three parameters
+            self.e_to_e_relation_probs = Parameter(
+                relation_probs[None, None].repeat(
+                    self.n_event_types, self.n_event_types, 1,
+                )
+            )
+            self.e_to_p_relation_probs = Parameter(
+                relation_probs[None, None].repeat(
+                    self.n_event_types, self.n_participant_types, 1,
+                )
+            )
+            self.p_to_p_relation_probs = Parameter(
+                relation_probs[None, None].repeat(
+                    self.n_participant_types, self.n_participant_types, 1,
+                )
+            )
 
-        # Role types: separate distribution for each event type (of the
-        # predicate) and participant type (of the argument)
-        self.role_probs = clz._initialize_log_prob(
-            (self.n_event_types, self.n_participant_types, self.n_role_types)
-        )
+        # No MMM params provided: randomly initialize model params
+        else:
+            # Initialize categorical distributions for the different types.
+            # We do not place priors on any of these distributions,
+            # initializing them randomly instead
+            self.n_event_types = n_event_types
+            self.n_role_types = n_role_types
+            self.n_participant_types = n_participant_types
+            self.n_relation_types = n_relation_types
 
-        # Relation types: separate distribution for each possible pairing
-        # of participant types
-        relation_probs = clz._initialize_log_prob(
-            (self.n_participant_types, self.n_participant_types, self.n_relation_types),
-            as_parameter=False,
-        )
+            # Event types
+            self.event_probs = self._initialize_log_prob((self.n_event_types,))
 
-        # We enforce that the only possible relation type for a relation
-        # involving an entity participant is "no relation." This is
-        # because a relation can obtain only between two *events*
-        relation_probs[self.n_event_types :, :, :-1] = NEG_INF
-        relation_probs[self.n_event_types :, :, -1] = 0
-        relation_probs[:, self.n_event_types :, :-1] = NEG_INF
-        relation_probs[:, self.n_event_types :, -1] = 0
-        self.relation_probs = Parameter(relation_probs)
+            # Entity-type participant probabilities (event-type participants
+            # are selected from event_probs above)
+            self.participant_probs = clz._initialize_log_prob(
+                (self.n_participant_types,)
+            )
 
-        # Initialize mus (expected annotations)
-        self.event_mus = self._initialize_event_params()
-        self.role_mus = self._initialize_role_params()
-        self.participant_mus = self._initialize_participant_params()
-        self.relation_mus, self.relation_covs = self._initialize_relation_params()
+            # Role types: separate distribution for each event type (of the
+            # predicate) and participant type (of the argument)
+            self.role_probs = clz._initialize_log_prob(
+                (self.n_event_types, self.n_participant_types, self.n_role_types)
+            )
+
+            # Relation types: Separate parameters for each of the possible
+            # pairs of items the relation may relate
+
+            # 1. event-event relations
+            self.e_to_e_relation_probs = clz._initialize_log_prob(
+                (self.n_event_types, self.n_event_types, self.n_relation_types,),
+            )
+
+            # 2. event-participant relations
+            self.e_to_p_relation_probs = clz._initialize_log_prob(
+                (self.n_event_types, self.n_participant_types, self.n_relation_types,),
+            )
+
+            # 3. participant-participant relations
+            self.p_to_p_relation_probs = clz._initialize_log_prob(
+                (
+                    self.n_participant_types,
+                    self.n_participant_types,
+                    self.n_relation_types,
+                ),
+            )
+
+            # Initialize mus (expected annotations)
+            self.event_mus = self._initialize_event_params()
+            self.role_mus = self._initialize_role_params()
+            self.participant_mus = self._initialize_participant_params()
+            self.relation_mus, self._initialize_relation_params()
+
+            # No random effects provided; they will be
+            # randomly initialized in the likelihoods
+            event_random_effects = None
+            role_random_effects = None
+            participant_random_effects = None
+            relation_random_effects = None
 
         # Fetch annotator IDs from UDS, used by the likelihood
         # modules to initialize their random effects
@@ -130,6 +203,9 @@ class EventTypeInductionModel(FreezableModule):
             sem_edge_annotators,
             doc_edge_annotators,
         ) = load_annotator_ids(self.uds)
+
+        # Load the annotators that appear only in the train split
+        train_annotators = load_train_annotators(self.uds)
 
         # Load ridit-scored annotator confidence values
         ridits = ridit_score_confidence(self.uds)
@@ -143,52 +219,71 @@ class EventTypeInductionModel(FreezableModule):
         # Modules for calculating likelihoods
         self.pred_node_likelihood = PredicateNodeAnnotationLikelihood(
             pred_node_annotator_confidence,
+            train_annotators,
             self.uds.metadata.sentence_metadata,
+            self.n_event_types,
+            self.use_ordinal,
+            self.clip_min_ll,
+            self.confidence_weighting,
+            self.use_random_effects,
+            event_random_effects,
             self.device,
         )
         self.arg_node_likelihood = ArgumentNodeAnnotationLikelihood(
             arg_node_annotator_confidence,
+            train_annotators,
             self.uds.metadata.sentence_metadata,
+            self.n_participant_types,
+            self.use_ordinal,
+            self.clip_min_ll,
+            self.confidence_weighting,
+            self.use_random_effects,
+            participant_random_effects,
             self.device,
         )
         self.semantics_edge_likelihood = SemanticsEdgeAnnotationLikelihood(
             sem_edge_annotator_confidence,
+            train_annotators,
             self.uds.metadata.sentence_metadata,
+            self.n_role_types,
+            self.use_ordinal,
+            self.clip_min_ll,
+            self.confidence_weighting,
+            self.use_random_effects,
+            role_random_effects,
             self.device,
         )
         self.doc_edge_likelihood = DocumentEdgeAnnotationLikelihood(
             doc_edge_annotator_confidence,
+            train_annotators,
             self.uds.metadata.document_metadata,
+            self.n_relation_types,
+            self.use_ordinal,
+            self.clip_min_ll,
+            self.confidence_weighting,
+            self.use_random_effects,
+            relation_random_effects,
             self.device,
         )
 
-    def _get_prop_dim(self, subspace, prop):
-
-        # determine whether this is a sentence or document property
-        if prop in self.uds.metadata.sentence_metadata.properties(subspace):
-            meta = self.uds.metadata.sentence_metadata.metadata
-        else:
-            meta = self.uds.metadata.document_metadata.metadata
-        prop_data = meta[subspace][prop].value
-
-        # determine property dimension
-        if prop_data.is_categorical:
-            n_categories = len(prop_data.categories)
-            # conditional categorical properties require an
-            # additional dimension for the "does not apply" case
-            if prop in CONDITIONAL_PROPERTIES:
-                return n_categories + 1
-            # non-conditional, ordinal categorical properties
-            if prop_data.is_ordered_categorical:
-                return n_categories
-            # non-conditional, binary categorical properties
-            else:
-                return n_categories - 1
-        # currently no non-categorical properties in UDS
-        else:
-            raise ValueError(
-                f"Non-categorical property {property} found in subspace {subspace}"
-            )
+    def _load_mmm_params(
+        self, ckpt_path: str, t: Type
+    ) -> Tuple[int, Parameter, ParameterDict, Optional[ParameterDict]]:
+        """Loads relevant parameters from a MultiviewMixtureModel"""
+        ckpt_dict = torch.load(ckpt_path, map_location=self.device)
+        n_types = ckpt_dict["component_weights"].shape[0]
+        mmm_prior = exp_normalize(ckpt_dict["component_weights"])
+        mmm_mus = ParameterDict(
+            {k[4:]: Parameter(v) for k, v in ckpt_dict.items() if "mus" in k}
+        )
+        mmm_random_effects = ParameterDict(
+            {
+                k.split(".")[-1]: Parameter(v)
+                for k, v in ckpt_dict.items()
+                if "random_effects" in k
+            }
+        )
+        return n_types, mmm_prior, mmm_mus, mmm_random_effects
 
     def _initialize_params(self, uds, n_types, subspaces) -> ParameterDict:
         """Initialize mu parameters for properties of a set of subspaces"""
@@ -197,7 +292,7 @@ class EventTypeInductionModel(FreezableModule):
             for prop, prop_metadata in sorted(
                 uds.metadata.sentence_metadata.metadata[subspace].items()
             ):
-                prop_dim = self._get_prop_dim(subspace, prop)
+                prop_dim = get_prop_dim(subspace, prop)
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
                     (n_types, prop_dim)
                 )
@@ -220,6 +315,7 @@ class EventTypeInductionModel(FreezableModule):
 
     def _initialize_relation_params(self) -> Tuple[ParameterDict, Parameter]:
         """Initialize parameters for document edge attributes"""
+        # TODO: update --- way out of date
         mu_dict = {}
 
         for subspace in sorted(RELATION_SUBSPACES):
@@ -229,7 +325,7 @@ class EventTypeInductionModel(FreezableModule):
             for prop, prop_metadata in sorted(
                 self.uds.metadata.document_metadata.metadata[subspace].items()
             ):
-                prop_dim = self._get_prop_dim(subspace, prop)
+                prop_dim = get_prop_dim(subspace, prop)
                 mu_dict[prop.replace(".", "-")] = self.__class__._initialize_log_prob(
                     (self.n_relation_types, prop_dim)
                 )
@@ -299,7 +395,7 @@ class EventTypeInductionModel(FreezableModule):
 
     @staticmethod
     def _initialize_log_prob(
-        shape: Tuple[int], as_parameter=True
+        shape: Tuple[int], uniform=False, as_parameter=True
     ) -> Union[torch.Tensor, Parameter]:
         """Unit random normal-based initialization for model parameters
 
@@ -315,35 +411,41 @@ class EventTypeInductionModel(FreezableModule):
         else:
             return torch.log(val)
 
-    def compute_annotation_likelihood(
-        self, fg: FactorGraph, beliefs: Dict[str, torch.Tensor]
-    ) -> float:
-        """Compute likelihood of UDS annotations
+    def compute_posteriors(
+        self,
+        fg: FactorGraph,
+        beliefs: Dict[str, torch.Tensor],
+        return_posteriors: bool = False,
+    ) -> torch.FloatTensor:
+        """Compute marginals for variable nodes in the factor graph
 
         Parameters
         ----------
         fg
-            The factor graph used to compute the likelihood
+            The factor graph used to compute the marginals
         beliefs
             A dictionary containing the beliefs (marginals) for each variable
             node
         """
-        ll = torch.FloatTensor([0]).to(self.device)
+        post = torch.FloatTensor([0]).to(self.device)
+        per_item_posteriors = defaultdict(dict)
         for lf_node_name, lf_node in fg.likelihood_factor_nodes.items():
-            # Only compute likelihoods over nodes that actually have
-            # annotations
+            # Only compute marginals over nodes that actually have
+            # annotations (i.e. have likelihood factor nodes)
             if lf_node.per_type_likelihood is not None:
                 # Get the variable node associated with this likelihood.
                 # Each likelihood has exactly one edge, which connects it
                 # to its variable node
                 var_node = list(fg.edges(lf_node))[0][1]
 
-                # Normalize beliefs + likelihood
-                belief = exp_normalize(beliefs[var_node.label])
-                likelihood = exp_normalize(lf_node.per_type_likelihood)
-                ll += torch.logsumexp(belief + likelihood, 0)
+                # Normalize beliefs
+                prior = exp_normalize(var_node.belief(lf_node))
+                likelihood = lf_node.per_type_likelihood
+                post += torch.logsumexp(prior + likelihood, 0)
+                if return_posteriors:
+                    per_item_posteriors[var_node.label] = exp_normalize(prior + likelihood)
 
-        return -ll
+        return -post, per_item_posteriors
 
     def random_loss(self):
         """Compute the loss for the prior(s) over annotator random effects"""
@@ -515,16 +617,9 @@ class EventTypeInductionModel(FreezableModule):
                     "pf", arg, "participant"
                 )
                 if participant_type_pf_node_name not in fg.factor_nodes:
-                    participant_probs = torch.cat(
-                        [
-                            self.event_probs + self.participant_domain_prob,
-                            self.entity_probs
-                            + torch.log(1 - torch.exp(self.participant_domain_prob)),
-                        ]
-                    )
                     participant_type_pf_node = PriorFactorNode(
                         participant_type_pf_node_name,
-                        participant_probs,
+                        self.participant_probs,
                         VariableType.PARTICIPANT,
                     )
                     fg.set_node(participant_type_pf_node)
@@ -569,7 +664,6 @@ class EventTypeInductionModel(FreezableModule):
                 self.doc_edge_likelihood,
                 self.relation_mus,
                 doc_edge_anno,
-                cov=self.relation_covs,
             )
             fg.set_node(doc_edge_lf_node)
             fg.set_edge(relation_v_node, doc_edge_lf_node, 0)
@@ -577,10 +671,23 @@ class EventTypeInductionModel(FreezableModule):
             # PRIOR FACTOR NODES --------------------------------
 
             # Create a factor for the prior over the relation type
-            # and connect it with the document edge variable node
+            # and connect it with the document edge variable node.
+            # The factor we use for the prior depends on whether
+            # the items related are predicate or argument nodes.
+            factor_dim = {}
+            if ("pred" in v1) and ("pred" in v2):
+                relation_probs = self.e_to_e_relation_probs
+                factor_dim[v1], factor_dim[v2] = (0, 1)
+            elif ("arg" in v1) and ("arg" in v2):
+                relation_probs = self.p_to_p_relation_probs
+                factor_dim[v1], factor_dim[v2] = (0, 1)
+            else:
+                relation_probs = self.e_to_p_relation_probs
+                factor_dim[v1], factor_dim[v2] = (0, 1) if "pred" in v1 else (1, 0)
+
             relation_pf_node = PriorFactorNode(
                 FactorGraph.get_node_name("pf", v1, v2, "relation"),
-                self.relation_probs,
+                relation_probs,
                 VariableType.RELATION,
             )
             fg.set_node(relation_pf_node)
@@ -588,7 +695,7 @@ class EventTypeInductionModel(FreezableModule):
 
             # We also connect this factor node to the variable nodes for
             # the predicates or arguments it relates.
-            for factor_dim, var_node_name in enumerate([v1, v2]):
+            for var_node_name in [v1, v2]:
 
                 # Identify the variable node for the predicate/argument
                 # (It must have been created in the sentence-level loop)
@@ -615,29 +722,52 @@ class EventTypeInductionModel(FreezableModule):
                 else:
                     # Connect the variable node to the prior factor node for the
                     # document edge
-                    fg.set_edge(var_node, relation_pf_node, factor_dim)
+                    fg.set_edge(var_node, relation_pf_node, factor_dim[var_node_name])
 
+        assert len(fg._variable_nodes) == len(
+            fg._prior_factor_nodes
+        ), f"Some variable node is missing a prior for document {document.name}"
+        assert len(fg._likelihood_factor_nodes) <= len(
+            fg._variable_nodes
+        ), f"More likelihoods than expected for document {document.name}"
         return fg
 
-    def forward(self, document: UDSDocument, time_run=False) -> torch.FloatTensor:
+    def forward(
+        self, document: UDSDocument, time_run=False, save_posteriors=False
+    ) -> torch.FloatTensor:
+        LOG.info(
+            f"processing document {document.name} which has {len(document.sentence_ids)} sentences"
+        )
         if time_run:
             LOG.info(f"Runtime analysis for {document.name}:")
             start_time = time.time()
             fg = self.construct_factor_graph(document)
             fg_construction_time = time.time()
+            ncc = nx.number_connected_components
+            LOG.info(
+                f"Factor graph for document {document.name} has {ncc} connected components"
+            )
             LOG.info(
                 f"  Factor graph construction: {np.round(fg_construction_time - start_time, 3)}"
             )
             beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
             bp_time = time.time()
             LOG.info(f"  BP: {np.round(bp_time - fg_construction_time, 3)}")
-            fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
+            fixed_loss, posteriors = self.compute_posteriors(
+                fg, beliefs, save_posteriors
+            )
             random_loss = self.random_loss()
             loss_calc_time = time.time()
             LOG.info(f"  Loss calculation: {np.round(loss_calc_time - bp_time, 3)}")
         else:
             fg = self.construct_factor_graph(document)
+            ncc = nx.number_connected_components(fg)
+            LOG.info(
+                f"Factor graph for document {document.name} has {ncc} connected components"
+            )
             beliefs = fg.loopy_sum_product(self.bp_iters, fg.variable_nodes.values())
-            fixed_loss = self.compute_annotation_likelihood(fg, beliefs)
+            fixed_loss, posteriors = self.compute_posteriors(
+                fg, beliefs, save_posteriors
+            )
             random_loss = self.random_loss()
-        return fixed_loss, random_loss
+        return fixed_loss, random_loss, posteriors

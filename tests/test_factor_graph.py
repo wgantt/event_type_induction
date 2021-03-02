@@ -44,46 +44,6 @@ class TestFactorGraph(unittest.TestCase):
 
         return fg, v1, v2, pf1
 
-    def three_variable_dimension_mismatch_setup(self):
-        fg = FactorGraph()
-
-        # Initialize variable nodes
-        e1 = VariableNode("e1", VariableType.EVENT, 2)
-        e2 = VariableNode("e2", VariableType.EVENT, 2)
-        r1 = VariableNode("r1", VariableType.RELATION, 3)
-        fg.set_node(e1)
-        fg.set_node(e2)
-        fg.set_node(r1)
-
-        # Initialize single prior factor node
-        pf_factor = -torch.FloatTensor(
-            [i + j + k for i in range(4) for j in range(4) for k in range(3)]
-        )
-        pf_factor = pf_factor.reshape((4, 4, 3))
-        pf = PriorFactorNode("pf", pf_factor, VariableType.RELATION)
-        fg.set_node(pf)
-        fg.set_edge(e1, pf, 0)
-        fg.set_edge(e2, pf, 1)
-        fg.set_edge(r1, pf, 2)
-
-        # Verify that appropriate edge types are created
-        assert isinstance(fg[e1][pf]["object"], DimensionMismatchEdge)
-        assert isinstance(fg[e2][pf]["object"], DimensionMismatchEdge)
-        assert not isinstance(fg[r1][pf]["object"], DimensionMismatchEdge)
-
-        # Verify that they are initialized with the appropriate messages
-        e1_pf = fg[e1][pf]["object"]
-        e2_pf = fg[e2][pf]["object"]
-        contracted_msg_init = torch.zeros(2)
-        expanded_msg_init = torch.zeros(4)
-        expanded_msg_init[2:] = NEG_INF
-        assert torch.equal(e1_pf.get_message(pf, e1), contracted_msg_init)
-        assert torch.equal(e2_pf.get_message(pf, e2), contracted_msg_init)
-        assert torch.equal(e1_pf.get_message(e1, pf), expanded_msg_init)
-        assert torch.equal(e2_pf.get_message(e2, pf), expanded_msg_init)
-
-        return fg, e1, e2, r1, pf
-
     def four_variable_setup(self, cyclic=False):
         """Four-variable linear chain (no likelihood factors)"""
         fg = FactorGraph()
@@ -226,17 +186,3 @@ class TestFactorGraph(unittest.TestCase):
         for a, e in zip(actual_beliefs, expected_beliefs):
             assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
 
-    def test_dimension_mismatch_edge(self):
-        fg, e1, e2, r1, pf = self.three_variable_dimension_mismatch_setup()
-
-        query_nodes = e1, e2, r1
-        schedule = [e1, e2, r1, pf]
-
-        actual_beliefs = fg.loopy_sum_product(20, query_nodes, schedule)
-        actual_beliefs = [torch.exp(exp_normalize(b)) for b in actual_beliefs.values()]
-        e1_expected = torch.Tensor([0.7311, 0.2689])
-        e2_expected = torch.Tensor([0.7311, 0.2689])
-        r1_expected = torch.Tensor([0.6652, 0.2447, 0.0900])
-        expected_beliefs = [e1_expected, e2_expected, r1_expected]
-        for a, e in zip(actual_beliefs, expected_beliefs):
-            assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"

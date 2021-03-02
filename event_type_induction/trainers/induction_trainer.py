@@ -1,5 +1,5 @@
-import event_type_induction.utils as utils
 from event_type_induction.modules.induction import EventTypeInductionModel
+from event_type_induction.utils import *
 
 from scripts.setup_logging import setup_logging
 
@@ -10,6 +10,7 @@ from decomp import UDSCorpus
 from torch.optim import Adam
 
 LOG = setup_logging()
+ckpt_dir = "/data/wgantt/event_type_induction/checkpoints"
 
 
 class EventTypeInductionTrainer:
@@ -21,7 +22,11 @@ class EventTypeInductionTrainer:
         n_entity_types: int,
         bp_iters: int,
         uds: UDSCorpus,
+        use_ordinal: bool = True,
+        clip_min_ll: bool = True,
+        confidence_weighting: bool = False,
         model=None,
+        mmm_ckpts=None,
         device: str = "cpu",
         random_seed=42,
     ):
@@ -31,6 +36,9 @@ class EventTypeInductionTrainer:
         self.n_entity_types = n_entity_types
         self.bp_iters = bp_iters
         self.uds = uds
+        self.use_ordinal = (use_ordinal,)
+        self.clip_min_ll = (clip_min_ll,)
+        self.confidence_weighting = (confidence_weighting,)
         self.device = torch.device(device)
         self.random_seed = random_seed
 
@@ -45,6 +53,10 @@ class EventTypeInductionTrainer:
                 n_entity_types,
                 bp_iters,
                 uds,
+                use_ordinal,
+                clip_min_ll,
+                confidence_weighting,
+                mmm_ckpts=mmm_ckpts,
                 device=self.device,
                 random_seed=self.random_seed,
             )
@@ -63,17 +75,19 @@ class EventTypeInductionTrainer:
         time: bool = False,
     ):
 
-        # TODO: actually use verbosity parameter
         optimizer = Adam(self.model.parameters(), lr=lr)
 
         LOG.info("Adding UDS-EventStructure annotations")
-        utils.load_event_structure_annotations(self.uds)
+        load_event_structure_annotations(self.uds)
 
-        documents_by_split = utils.get_documents_by_split(self.uds)
+        documents_by_split = get_documents_by_split(self.uds)
 
         LOG.info(f"Beginning training for a maximum of {n_epochs} epochs.")
         LOG.info(
             f"Training on all {len(documents_by_split['train'])} documents in UDS train split."
+        )
+        LOG.info(
+            f"Evaluating on all {len(documents_by_split['dev'])} documents in UDS dev split."
         )
         for epoch in range(n_epochs):
 
@@ -85,17 +99,34 @@ class EventTypeInductionTrainer:
             batch_num = 0
             loss = torch.FloatTensor([0.0]).to(self.device)
             LOG.info(f"Starting epoch {epoch}")
-            for i, doc in enumerate(sorted(list(documents_by_split["train"]))):
+
+            # If this is the last epoch, we save all the per-item posteriors
+            all_posteriors = {}
+            """
+            if epoch == n_epochs - 1:
+                save_posteriors = True
+            else:
+                save_posteriors = False
+            """
+            save_posteriors = True
+
+            for i, doc in enumerate(sorted(documents_by_split["train"])):
 
                 # Forward
                 self.model.zero_grad()
-                fixed_loss, random_loss = self.model(self.uds.documents[doc], time)
+                fixed_loss, random_loss, posteriors = self.model(
+                    self.uds.documents[doc], time, save_posteriors
+                )
                 loss += fixed_loss + random_loss
                 LOG.info(f"Fixed loss for document {i} ({doc}): {fixed_loss.item()}")
                 batch_fixed_trace.append(fixed_loss.item())
                 batch_random_trace.append(random_loss.item())
                 epoch_fixed_trace.append(fixed_loss.item())
                 epoch_random_trace.append(random_loss.item())
+
+                # Save per-item posteriors from the current document
+                if save_posteriors:
+                    all_posteriors[doc] = posteriors
 
                 # Backprop + optimizer step
                 # In standard EM, we would obviously want batch size to equal
@@ -121,4 +152,44 @@ class EventTypeInductionTrainer:
             LOG.info(epoch_mean_loss_str)
             LOG.info("-" * len(epoch_mean_loss_str))
 
-        return self.model.eval()
+            # Evaluate on dev only on last epoch
+            if epoch == (n_epochs - 1):
+                LOG.info(f"Beginning dev eval...")
+                for i, doc in enumerate(sorted(documents_by_split["dev"])):
+                    with torch.no_grad():
+                        fixed_loss, random_loss, posteriors = self.model(
+                            self.uds.documents[doc], time, save_posteriors
+                        )
+                        LOG.info(f"Fixed loss for document {i} ({doc}): {fixed_loss.item()}")
+                        all_posteriors[doc] = posteriors
+
+
+            if save_posteriors:
+                # Save the posteriors for the variable nodes to a file
+                events = "ev" + str(self.model.n_event_types)
+                roles = "ro" + str(self.model.n_role_types)
+                participants = "en" + str(self.model.n_participant_types)
+                relations = "re" + str(self.model.n_relation_types)
+                event_posteriors_file = events + str(i) + ".csv"
+                role_posteriors_file = roles + str(i) + ".csv"
+                participant_posteriors_file = participants + str(i) + ".csv"
+                relations_posteriors_file = relations + str(i) + ".csv"
+                posteriors_files = [
+                    ckpt_dir + "/" + event_posteriors_file,
+                    ckpt_dir + "/" + role_posteriors_file,
+                    ckpt_dir + "/" + participant_posteriors_file,
+                    ckpt_dir + "/" + relations_posteriors_file,
+                ]
+                types = [
+                    (Type.EVENT, self.model.n_event_types),
+                    (Type.ROLE, self.model.n_role_types),
+                    (Type.PARTICIPANT, self.model.n_participant_types),
+                    (Type.RELATION, self.model.n_relation_types),
+                ]
+                for (t, n_types), post_file in zip(types, posteriors_files):
+                    LOG.info(
+                       f"Saving per-item posteriors for {t.name.lower()} types to {post_file}"
+                    )
+                    dump_fg_posteriors(post_file, all_posteriors, t, n_types)
+
+        return self.model.eval(), all_posteriors

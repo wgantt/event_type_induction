@@ -548,14 +548,14 @@ def dump_params(
         df.to_csv(outfile, index=False)
 
 
-def dump_posteriors(
+def dump_mmm_posteriors(
     outfile: str,
     train_posteriors: torch.FloatTensor,
     train_idx_to_item: defaultdict(str),
     dev_posteriors: torch.FloatTensor,
     dev_idx_to_item: defaultdict(str),
 ) -> None:
-    df = pd.DataFrame()
+    """Saves per-item posteriors from MMM clustering to a file"""
     item_names = []
     posteriors = []
     for i, (idx, item) in enumerate(train_idx_to_item.items()):
@@ -567,10 +567,35 @@ def dump_posteriors(
             item_names.append(item)
             posteriors.append(dev_posteriors[:, i].tolist())
     posteriors = np.array(posteriors)
+    df = pd.DataFrame()
     df["item_name"] = item_names
     for i in range(posteriors.shape[1]):
         df["posterior-cluster-" + str(i)] = posteriors[:, i]
 
+    with open(outfile, "w") as f:
+        df.to_csv(outfile, index=False)
+
+
+def dump_fg_posteriors(
+    outfile: str, doc_posteriors: Dict[str, torch.FloatTensor], t: Type, n_types: int
+) -> None:
+    """Saves per-item posteriors from factor graph clustering to a file"""
+    all_cols = ["item"]
+    all_cols.extend(["type" + str(i) for i in range(n_types)])
+    all_rows = []
+    type_name = t.name.lower()
+
+    # Collect per-item posteriors
+    for doc, item_posteriors in doc_posteriors.items():
+        for item, posterior in item_posteriors.items():
+            if type_name not in item:
+                continue
+            row = [item]
+            row.extend([p.item() for p in posterior])
+            all_rows.append(row)
+
+    # Write to file
+    df = pd.DataFrame(all_rows, columns=all_cols)
     with open(outfile, "w") as f:
         df.to_csv(outfile, index=False)
 

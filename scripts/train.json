@@ -1,20 +1,25 @@
 {
   "checkpoints":{
-    "ckpt_dir":"/data/wgantt/event_type_induction",
-    "ckpt_file_name":"model",
-    "save_ckpts":true
+    "event_mmm":["/data/wgantt/event_type_induction/checkpoints/EVENT-6.pt"],
+    "participant_mmm":["/data/wgantt/event_type_induction/checkpoints/PARTICIPANT-6.pt"],
+    "role_mmm":["/data/wgantt/event_type_induction/checkpoints/ROLE-6.pt"],
+    "relation_mmm":["/data/wgantt/event_type_induction/checkpoints/RELATION-6.pt"],
+    "ckpt_dir":["/data/wgantt/event_type_induction/checkpoints"],
+    "ckpt_file_name":["model"],
+    "save_ckpts":[true],
+    "save_posteriors":[true]
   },
   "hyper":{
-    "n_event_types": [4],
-    "n_role_types": [4],
-    "n_relation_types": [4],
-    "n_entity_types": [4],
-    "bp_iters": [7],
+    "n_event_types": [-1],
+    "n_role_types": [-1],
+    "n_relation_types": [-1],
+    "n_entity_types": [-1],
+    "bp_iters": [10],
     "device": ["cpu"],
     "random_seed": [42]
   },
   "training":{
-    "n_epochs": [1],
+    "n_epochs": [5],
     "lr": [0.001],
     "verbosity": [10],
     "batch_size": [1],
