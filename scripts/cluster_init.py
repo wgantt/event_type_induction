@@ -745,8 +745,7 @@ class MultiviewMixtureModel(Module):
             prior = exp_normalize(self.component_weights)[:, None]
             train_posteriors = train_fixed_loss[:, train_items] + prior
 
-            # logsumexp over all components to get log-evidence for each item,
-            # then mean-reduce
+            # logsumexp over all components to get log-evidence for each item
             train_fixed_loss = (
                 -torch.logsumexp(train_posteriors, 0).sum() / total_train_items
             )

@@ -147,7 +147,9 @@ class VariableNode(Node):
     def type(self):
         return NodeType.VARIABLE
 
-    def belief(self, normalize: bool = False, exclusion: Optional["Node"] = None) -> Tensor:
+    def belief(
+        self, normalize: bool = False, exclusion: Optional["Node"] = None
+    ) -> Tensor:
         """Return the belief of the variable node
 
         As throughout this class, this method assumes that messages
@@ -585,7 +587,7 @@ class FactorGraph(nx.Graph):
         query_nodes: Optional[List[VariableNode]] = [],
         order: Optional[List[Node]] = None,
         exclusions: Optional[Dict[Node, Optional[Node]]] = {},
-        normalize_beliefs: bool = True
+        normalize_beliefs: bool = True,
     ) -> Dict[str, Any]:
         """Runs message passing on graphs with cycles
 

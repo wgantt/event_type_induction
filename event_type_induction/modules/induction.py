@@ -443,7 +443,9 @@ class EventTypeInductionModel(FreezableModule):
                 likelihood = lf_node.per_type_likelihood
                 post += torch.logsumexp(prior + likelihood, 0)
                 if return_posteriors:
-                    per_item_posteriors[var_node.label] = exp_normalize(prior + likelihood)
+                    per_item_posteriors[var_node.label] = exp_normalize(
+                        prior + likelihood
+                    )
 
         return -post, per_item_posteriors
 

@@ -160,9 +160,10 @@ class EventTypeInductionTrainer:
                         fixed_loss, random_loss, posteriors = self.model(
                             self.uds.documents[doc], time, save_posteriors
                         )
-                        LOG.info(f"Fixed loss for document {i} ({doc}): {fixed_loss.item()}")
+                        LOG.info(
+                            f"Fixed loss for document {i} ({doc}): {fixed_loss.item()}"
+                        )
                         all_posteriors[doc] = posteriors
-
 
             if save_posteriors:
                 # Save the posteriors for the variable nodes to a file
@@ -188,7 +189,7 @@ class EventTypeInductionTrainer:
                 ]
                 for (t, n_types), post_file in zip(types, posteriors_files):
                     LOG.info(
-                       f"Saving per-item posteriors for {t.name.lower()} types to {post_file}"
+                        f"Saving per-item posteriors for {t.name.lower()} types to {post_file}"
                     )
                     dump_fg_posteriors(post_file, all_posteriors, t, n_types)
 

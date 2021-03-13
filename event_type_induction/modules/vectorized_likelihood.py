@@ -97,8 +97,6 @@ class Likelihood(Module):
                     # effects correspond to per-annotator cutpoints
                     n_categories = len(self.metadata[subspace][p].value.categories)
                     prop_dim = n_categories - 1
-                    # TODO: determine how to set covariance for sampling
-                    # TODO: should random loss be different for these?
                     ordinal_random_effect = Parameter(
                         MultivariateNormal(
                             torch.zeros(prop_dim), torch.eye(prop_dim) * 0.1
@@ -159,11 +157,9 @@ class Likelihood(Module):
             # If evaluating on dev, we don't have tuned random effects for
             # annotators who weren't seen during training, so we use the
             # mean random effect across train set annotators.
-            train_random_effects = self.random_effects[prop_name][
+            mean_train_random_effect = self.random_effects[prop_name][
                 train_annotators[p], :
-            ]
-            train_random_effects -= train_random_effects.mean()
-            mean_train_random_effect = train_random_effects.mean(0)
+            ].mean(0)
             random = self.random_effects[prop_name][annotators[p], :]
             random[~dev_annotators_in_train[p]] = mean_train_random_effect
             random = (random - random.mean(0))[None]
@@ -175,11 +171,9 @@ class Likelihood(Module):
                 and p in self.ordinal_properties
                 and p in CONDITIONAL_PROPERTIES
             ):
-                train_random_bernoulli = self.random_effects[prop_name + "-applies"][
-                    train_annotators[p]
-                ]
-                train_random_bernoulli -= train_random_bernoulli.mean(0)
-                mean_train_random_bernoulli = train_random_bernoulli.mean(0)
+                mean_train_random_bernoulli = self.random_effects[
+                    prop_name + "-applies"
+                ][train_annotators[p]].mean(0)
                 random_bernoulli = self.random_effects[prop_name + "-applies"][
                     annotators[p]
                 ]
@@ -189,8 +183,8 @@ class Likelihood(Module):
                 random_bernoulli -= random_bernoulli.mean(0)
                 random = (random_bernoulli, random)
         else:
-            random = self.random_effects[prop_name][annotators[p], :][None]
-            random -= random.mean(0)
+            random = self.random_effects[prop_name][annotators[p], :]
+            random = (random - random.mean(0))[None]
             if (
                 self.use_ordinal
                 and p in self.ordinal_properties
@@ -680,7 +674,6 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
         lock_mid_mean = mus["time-lock_mid_mu"][:, None, :]
 
         # Get random effects
-        # TODO
         lock_start_random = self._get_random_effects(
             "time-lock_start", annotators, train_annotators, dev_annotators_in_train
         )

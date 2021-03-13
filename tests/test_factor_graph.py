@@ -185,4 +185,3 @@ class TestFactorGraph(unittest.TestCase):
         ]
         for a, e in zip(actual_beliefs, expected_beliefs):
             assert torch.allclose(a, e, atol=1e-04), f"expected {e} but got {a}"
-
