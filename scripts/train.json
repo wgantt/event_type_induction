@@ -1,11 +1,11 @@
 {
   "checkpoints":{
-    "event_mmm":["/data/wgantt/event_type_induction/checkpoints/EVENT-6.pt"],
-    "participant_mmm":["/data/wgantt/event_type_induction/checkpoints/PARTICIPANT-6.pt"],
-    "role_mmm":["/data/wgantt/event_type_induction/checkpoints/ROLE-6.pt"],
-    "relation_mmm":["/data/wgantt/event_type_induction/checkpoints/RELATION-6.pt"],
-    "ckpt_dir":["/data/wgantt/event_type_induction/checkpoints"],
-    "ckpt_file_name":["model"],
+    "event_mmm":["/data/wgantt/event_type_induction/checkpoints/EVENT-NEW-4.pt"],
+    "participant_mmm":["/data/wgantt/event_type_induction/checkpoints/PARTICIPANT-NEW-8.pt"],
+    "role_mmm":["/data/wgantt/event_type_induction/checkpoints/ROLE-NEW-2.pt"],
+    "relation_mmm":["/data/wgantt/event_type_induction/checkpoints/RELATION-NEW-5.pt"],
+    "ckpt_dir":["/data/wgantt/event_type_induction/full_model_final"],
+    "ckpt_file_name":["full_model_final"],
     "save_ckpts":[true],
     "save_posteriors":[true]
   },
@@ -14,12 +14,12 @@
     "n_role_types": [-1],
     "n_relation_types": [-1],
     "n_entity_types": [-1],
-    "bp_iters": [10],
+    "bp_iters": [5],
     "device": ["cpu"],
     "random_seed": [42]
   },
   "training":{
-    "n_epochs": [5],
+    "n_epochs": [10],
     "lr": [0.001],
     "verbosity": [10],
     "batch_size": [1],

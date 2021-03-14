@@ -83,30 +83,6 @@ def main(args):
                     )
                     LOG.info("Complete.")
 
-                if save_posteriors:
-                    # Save the posteriors for the variable nodes to a file
-                    event_posteriors_file = events + ".csv"
-                    role_posteriors_file = roles + ".csv"
-                    participant_posteriors_file = participants + ".csv"
-                    relations_posteriors_file = relations + ".csv"
-                    posteriors_files = [
-                        ckpt_dir + "/" + event_posteriors_file,
-                        ckpt_dir + "/" + role_posteriors_file,
-                        ckpt_dir + "/" + participant_posteriors_file,
-                        ckpt_dir + "/" + relations_posteriors_file,
-                    ]
-                    types = [
-                        (Type.EVENT, model.n_event_types),
-                        (Type.ROLE, model.n_role_types),
-                        (Type.PARTICIPANT, model.n_participant_types),
-                        (Type.RELATION, model.n_relation_types),
-                    ]
-                    for (t, n_types), post_file in zip(types, posteriors_files):
-                        LOG.info(
-                            f"Saving per-item posteriors for {t.name.lower()} types to {post_file}"
-                        )
-                        dump_fg_posteriors(post_file, posteriors, t, n_types)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

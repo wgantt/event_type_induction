@@ -12,7 +12,6 @@ from event_type_induction.modules.likelihood import (
     SemanticsEdgeAnnotationLikelihood,
     DocumentEdgeAnnotationLikelihood,
 )
-from event_type_induction.modules.freezable_module import FreezableModule
 from event_type_induction.utils import *
 from event_type_induction.constants import *
 from scripts.cluster_init import MultiviewMixtureModel
@@ -26,7 +25,7 @@ from decomp import UDSCorpus
 from decomp.semantics.uds import UDSDocument, UDSDocumentGraph
 from collections import defaultdict
 import networkx as nx
-from torch.nn import Parameter, ParameterDict
+from torch.nn import Module, Parameter, ParameterDict
 from torch.nn.functional import softmax
 from typing import Dict, Tuple, Union, Optional
 
@@ -34,7 +33,7 @@ from typing import Dict, Tuple, Union, Optional
 LOG = setup_logging()
 
 
-class EventTypeInductionModel(FreezableModule):
+class EventTypeInductionModel(Module):
     def __init__(
         self,
         n_event_types: int,
