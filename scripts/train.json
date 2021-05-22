@@ -1,11 +1,11 @@
 {
   "checkpoints":{
-    "event_mmm":["/data/wgantt/event_type_induction/checkpoints/EVENT-NEW-4.pt"],
-    "participant_mmm":["/data/wgantt/event_type_induction/checkpoints/PARTICIPANT-NEW-8.pt"],
-    "role_mmm":["/data/wgantt/event_type_induction/checkpoints/ROLE-NEW-2.pt"],
-    "relation_mmm":["/data/wgantt/event_type_induction/checkpoints/RELATION-NEW-5.pt"],
-    "ckpt_dir":["/data/wgantt/event_type_induction/full_model_final"],
-    "ckpt_file_name":["full_model_final"],
+    "event_mmm":["results/checkpoints/mmm-event-4.pt"],
+    "participant_mmm":["results/checkpoints/mmm-participant-8.pt"],
+    "role_mmm":["results/checkpoints/mmm-role-2.pt"],
+    "relation_mmm":["results/checkpoints/mmm-relation-5.pt"],
+    "ckpt_dir":["out"],
+    "ckpt_file_name":["full-model-final"],
     "save_ckpts":[true],
     "save_posteriors":[true]
   },
