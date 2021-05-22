@@ -8,7 +8,7 @@ The GitHub repository for the Decomp Toolkit can be found [here](https://github.
 
 ## Setup
 
-This code was developed using Python 3.7.9 and should work with Python >= 3.7, although we have not tested it with versions other than 3.7.9. If you are a Conda user, the easiest way to get started is by creating a new Conda environment using the provided `.yml` file:
+This code was developed using Python 3.7.10 and should work with Python >= 3.7, although we have not tested it with versions other than 3.7.10. If you are a Conda user, the easiest way to get started is by creating a new Conda environment using the provided `.yml` file:
 
 ```
 conda env create --file event_type_induction.yml

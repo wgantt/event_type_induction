@@ -1,4 +1,4 @@
-decomp==2.0.0a1
+decomp==0.2.1
 decorator==4.4.*
 networkx==2.5.*
 numpy==1.17.*
