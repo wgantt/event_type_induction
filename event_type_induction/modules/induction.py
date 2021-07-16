@@ -77,8 +77,8 @@ class EventTypeInductionModel(Module):
             for t in Type:
                 assert t in mmm_ckpts, f"Missing checkpoint for type {t}"
 
-            # Load number of types, prior probabilties, means, and covariance
-            # (for relation types) from the MMM checkpoints
+            # Load number of types, prior probabilties,
+            # and means from the MMM checkpoints
             (
                 self.n_event_types,
                 event_probs,
@@ -135,6 +135,7 @@ class EventTypeInductionModel(Module):
             )
 
         # No MMM params provided: randomly initialize model params
+        # (This has not been tested in a while -- W.G.)
         else:
             # Initialize categorical distributions for the different types.
             # We do not place priors on any of these distributions,

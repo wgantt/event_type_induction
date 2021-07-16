@@ -737,6 +737,8 @@ class DocumentEdgeAnnotationLikelihood(Likelihood):
                 ll = torch.where(
                     ll > log(Tensor([MIN_LIKELIHOOD]).to(self.device)), ll, min_ll
                 )
+
+            # TODO: toggle confidence weight
             likelihoods["time"] += temp_rel_ridit_confs[a] * ll
 
         total_ll += likelihoods["time"]

@@ -5,3 +5,5 @@ scripts/logs/*
 build/
 dist/
 event_type_induction.egg-info/
+snippets.bk
+results/checkpoints/

@@ -5,15 +5,14 @@
     "role_mmm":["results/checkpoints/mmm-role-2.pt"],
     "relation_mmm":["results/checkpoints/mmm-relation-5.pt"],
     "ckpt_dir":["out"],
-    "ckpt_file_name":["full-model-final"],
-    "save_ckpts":[true],
-    "save_posteriors":[true]
+    "ckpt_file_name":["full-model-with-confidence"],
+    "save_ckpts":[true]
   },
   "hyper":{
     "n_event_types": [-1],
     "n_role_types": [-1],
     "n_relation_types": [-1],
-    "n_entity_types": [-1],
+    "n_participant_types": [-1],
     "bp_iters": [5],
     "device": ["cpu"],
     "random_seed": [42]
@@ -23,6 +22,8 @@
     "lr": [0.001],
     "verbosity": [10],
     "batch_size": [1],
-    "time": [false]
+    "time": [false],
+    "start_on_dev": [true],
+    "save_posteriors":[true]
   }
 }

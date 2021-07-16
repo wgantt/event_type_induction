@@ -45,14 +45,17 @@ def main(args):
     # For each type, determine whether the median estimate for the
     # log-evidence (50% CI) is greater than the 2.5% CI for all greater
     # numbers of types. This is our selection criterion.
-    for i,t in enumerate(range(args.min_types, args.max_types + 1)): 
+    for i, t in enumerate(range(args.min_types, args.max_types + 1)):
         lb = lower_bounds[i]
         ub = upper_bounds[i]
         med = medians[i]
-        med_greater_than_successive_lbs = (np.array(lower_bounds[i+1:]) < med).all()
+        med_greater_than_successive_lbs = (np.array(lower_bounds[i + 1 :]) < med).all()
         print(f"Log evidence estimate CIs for {t} types:")
         print(f"2.5%: {int(lb)} | 50%: {int(med)} | 97.5%: {int(ub)}")
-        print(f"Median greater than all successive lower bounds? {med_greater_than_successive_lbs}")
+        print(
+            f"Median greater than all successive lower bounds? {med_greater_than_successive_lbs}"
+        )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

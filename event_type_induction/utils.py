@@ -12,7 +12,7 @@ from event_type_induction.constants import *
 from glob import glob
 from itertools import product
 from pkg_resources import resource_filename
-from typing import Any, Dict, Generator, Iterable, Iterator, List, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, Iterator, List, Optional, Set, Tuple
 
 
 class AllenRelation(Enum):
@@ -510,7 +510,9 @@ def save_model_with_args(params, model, initargs, ckpt_dir, file_name):
     return save_model(ckpt_dict, ckpt_dir, file_name)
 
 
-def load_model_with_args(cls, ckpt_path):
+def load_model_with_args(
+    cls, ckpt_path: str, overrides: Optional[Dict[str, Any]] = None
+):
     ckpt_dict = torch.load(ckpt_path)
     hyper_params = ckpt_dict.get("curr_hyper", {})
 
@@ -518,6 +520,7 @@ def load_model_with_args(cls, ckpt_path):
     uds = UDSCorpus(version="2.0", annotation_format="raw")
     load_event_structure_annotations(uds)
     hyper_params["uds"] = uds
+    hyper_params.update(overrides)
 
     model = cls(**hyper_params)
     if "state_dict" in ckpt_dict:

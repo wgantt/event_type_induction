@@ -12,7 +12,7 @@ from torch.optim import Adam
 from typing import Dict
 
 LOG = setup_logging()
-ckpt_dir = "/data/wgantt/event_type_induction/full_model_final"
+ckpt_dir = "/data/wgantt/event_type_induction/full_model_w_confidence_weighting"
 
 
 def save_all_posteriors(
@@ -58,7 +58,7 @@ class EventTypeInductionTrainer:
         n_event_types: int,
         n_role_types: int,
         n_relation_types: int,
-        n_entity_types: int,
+        n_participant_types: int,
         bp_iters: int,
         uds: UDSCorpus,
         use_ordinal: bool = True,
@@ -72,7 +72,7 @@ class EventTypeInductionTrainer:
         self.n_event_types = n_event_types
         self.n_role_types = n_role_types
         self.n_relation_types = n_relation_types
-        self.n_entity_types = n_entity_types
+        self.n_participant_types = n_participant_types
         self.bp_iters = bp_iters
         self.uds = uds
         self.use_ordinal = (use_ordinal,)
@@ -89,7 +89,7 @@ class EventTypeInductionTrainer:
                 n_event_types,
                 n_role_types,
                 n_relation_types,
-                n_entity_types,
+                n_participant_types,
                 bp_iters,
                 uds,
                 use_ordinal,
@@ -109,8 +109,10 @@ class EventTypeInductionTrainer:
         batch_size: int = 1,
         n_epochs: int = 10,
         lr: float = 1e-3,
-        random_seed: int = 42,
-        verbosity: int = 10,
+        random_seed: int = 42,  # currently set elsewhere
+        verbosity: int = 10,  # currently unused
+        save_posteriors: bool = True,
+        start_on_dev: bool = False,
         time: bool = False,
     ):
 
@@ -129,6 +131,7 @@ class EventTypeInductionTrainer:
         LOG.info(
             f"Evaluating on all {len(documents_by_split['dev'])} documents in UDS dev split."
         )
+
         for epoch in range(n_epochs):
 
             # Bookkeeping
@@ -142,9 +145,11 @@ class EventTypeInductionTrainer:
 
             # If this is the last epoch, we save all the per-item posteriors
             all_posteriors = {}
-            save_posteriors = True  # TODO: make configurable
 
             for i, doc in enumerate(sorted(documents_by_split["train"])):
+                if start_on_dev and epoch == 0:
+                    LOG.info("Evaluating on dev first before training.")
+                    break
 
                 # Forward
                 self.model.zero_grad()
@@ -179,12 +184,13 @@ class EventTypeInductionTrainer:
                     batch_random_trace = []
                     batch_num += 1
 
-            epoch_fixed_loss = np.round(np.mean(epoch_fixed_trace), 3)
-            epoch_random_loss = np.round(np.mean(epoch_random_trace), 3)
-            epoch_mean_loss_str = f"Epoch {epoch} mean train loss: {epoch_fixed_loss} (fixed); {epoch_random_loss} (random)"
-            LOG.info("-" * len(epoch_mean_loss_str))
-            LOG.info(epoch_mean_loss_str)
-            LOG.info("-" * len(epoch_mean_loss_str))
+            if (epoch > 0) or (not start_on_dev):
+                epoch_fixed_loss = np.round(np.mean(epoch_fixed_trace), 3)
+                epoch_random_loss = np.round(np.mean(epoch_random_trace), 3)
+                epoch_mean_loss_str = f"Epoch {epoch} mean train loss: {epoch_fixed_loss} (fixed); {epoch_random_loss} (random)"
+                LOG.info("-" * len(epoch_mean_loss_str))
+                LOG.info(epoch_mean_loss_str)
+                LOG.info("-" * len(epoch_mean_loss_str))
 
             # Evaluate on all of dev at the end of each epoch
             dev_epoch_fixed_trace = []

@@ -6,7 +6,7 @@ import random
 from sklearn.mixture import GaussianMixture
 import torch
 from torch.nn import Parameter, ParameterDict, Module
-from typing import List, Iterator
+from typing import List
 
 # Package internal imports
 from event_type_induction.constants import *
@@ -147,6 +147,11 @@ class GMM:
                         ):
                             continue
 
+                        # The distributive property is listed under the event_structure
+                        # subspace, but is not relevant to event types
+                        if t == Type.EVENT and p == "distributive":
+                            continue
+
                         # Associate the current property with a range of indices
                         # in the annotation vector
                         if p not in properties_to_indices:
@@ -157,6 +162,7 @@ class GMM:
 
                         # Process annotations for this item only if they actually exist
                         n_annos = 0  # number of annotations for this item
+
                         if subspace in anno and p in anno[subspace]:
                             annotation_found = True
                             for a, value in anno[subspace][p]["value"].items():
@@ -836,6 +842,10 @@ class MultiviewMixtureModel(Module):
 
 
 def main(args):
+    assert (
+        args.min_types <= args.max_types
+    ), f"min types must be less than or equal to max!"
+
     # Load UDS and initialize the mixture model
     uds = UDSCorpus(version="2.0", annotation_format="raw")
     load_event_structure_annotations(uds)
@@ -860,9 +870,7 @@ def main(args):
     model_root = args.model_name if args.model_name is not None else t.name
     for n_components in range(args.min_types, args.max_types + 1):
         # Initialize and fit the model
-        mmm = MultiviewMixtureModel(
-            uds, use_ordinal=args.use_ordinal, device=args.device
-        )
+        mmm = MultiviewMixtureModel(uds, use_ordinal=True, device=args.device)
         model_name = model_root + "-" + str(n_components) + ".pt"
         mmm = mmm.fit(
             data,
@@ -916,11 +924,6 @@ if __name__ == "__main__":
         help="path to directory where checkpoint files are to be saved",
     )
     parser.add_argument(
-        "--use_ordinal",
-        action="store_true",
-        help="indicates whether ordinal variables should be treated as ordinal or as categorical",
-    )
-    parser.add_argument(
         "--dump_means", action="store_true", help="dump MMM property means to file",
     )
     parser.add_argument(
@@ -931,7 +934,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--clip_min_ll",
         action="store_true",
-        help="clip all likelihoods to a minimum value (currently 10e-5)",
+        help="clip all likelihoods to a minimum value",
     )
     parser.add_argument(
         "--weight_by_confidence",
