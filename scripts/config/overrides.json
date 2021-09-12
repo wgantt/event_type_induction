@@ -1,0 +1,7 @@
+{
+	"n_event_types": 4,
+	"n_role_types": 2,
+	"n_participant_types": 8,
+	"n_relation_types": 5,
+	"confidence_weighting": true
+}

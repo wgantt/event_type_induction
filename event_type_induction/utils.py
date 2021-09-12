@@ -582,7 +582,10 @@ def dump_mmm_posteriors(
 def dump_fg_posteriors(
     outfile: str, doc_posteriors: Dict[str, torch.FloatTensor], t: Type, n_types: int
 ) -> None:
-    """Saves per-item posteriors from factor graph clustering to a file"""
+    """Saves per-item posteriors from factor graph clustering to a file
+    
+    TODO: fix so that these are dumped in an appropriate format (e.g. '%%' for edges)
+    """
     all_cols = ["item"]
     all_cols.extend(["type" + str(i) for i in range(n_types)])
     all_rows = []

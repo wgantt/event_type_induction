@@ -7,3 +7,7 @@ dist/
 event_type_induction.egg-info/
 snippets.bk
 results/checkpoints/
+results/mmm-final-clustering/
+results/full-model-stage-1/
+results/full-model-stage-2/
+out/

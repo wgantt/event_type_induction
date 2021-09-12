@@ -5,7 +5,7 @@
     "role_mmm":["results/checkpoints/mmm-role-2.pt"],
     "relation_mmm":["results/checkpoints/mmm-relation-5.pt"],
     "ckpt_dir":["out"],
-    "ckpt_file_name":["full-model-with-confidence"],
+    "ckpt_file_name":["full_model_stage1"],
     "save_ckpts":[true]
   },
   "hyper":{
@@ -23,7 +23,7 @@
     "verbosity": [10],
     "batch_size": [1],
     "time": [false],
-    "start_on_dev": [true],
+    "start_on_dev": [false],
     "save_posteriors":[true]
   }
 }
